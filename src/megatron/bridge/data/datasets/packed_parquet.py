@@ -368,6 +368,8 @@ class GPTSFTPackedParquetDataset(GPTSFTPackedDataset):
             **kwargs,
         )
 
+        print(f"DEBUG _pad_seq_to_mult = {self._pad_seq_to_mult}", flush=True)
+
     def _load_dataset(self):
         """Load Parquet metadata from all files and validate schemas.
 

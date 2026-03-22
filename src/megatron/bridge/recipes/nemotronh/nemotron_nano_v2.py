@@ -39,11 +39,12 @@ def nemotron_nano_9b_v2_pretrain_config() -> ConfigContainer:
     # Model config - uses NemotronNanoModelProvider9Bv2
     cfg.model = NemotronNanoModelProvider9Bv2(
         tensor_model_parallel_size=2,
-        pipeline_model_parallel_size=1,
+        pipeline_model_parallel_size=8,
         pipeline_dtype=torch.bfloat16,
         virtual_pipeline_model_parallel_size=None,
-        context_parallel_size=1,
+        context_parallel_size=2,
         sequence_parallel=True,
+        seq_length=131072,
     )
 
     # Parallel settings (already set in model provider above)
@@ -247,19 +248,22 @@ def nemotron_nano_9b_v2_sft_config() -> ConfigContainer:
     # Model config - uses NemotronNanoModelProvider9Bv2
     cfg.model = NemotronNanoModelProvider9Bv2(
         tensor_model_parallel_size=2,
-        pipeline_model_parallel_size=1,
+        pipeline_model_parallel_size=8,
         pipeline_dtype=torch.bfloat16,
         virtual_pipeline_model_parallel_size=None,
-        context_parallel_size=1,
+        context_parallel_size=2,
         sequence_parallel=True,
-        seq_length=2048,
+        seq_length=131072,
     )
+
+    cfg.model.calculate_per_token_loss = True
+    cfg.ddp.average_in_collective = False
 
     # Parallelism settings
     cfg.model.pipeline_model_parallel_layout = None
 
     # Sequence length
-    cfg.model.seq_length = 2048
+    cfg.model.seq_length = 131072
 
     # TE (Transformer Engine)
     cfg.model.transformer_impl = "transformer_engine"
@@ -279,6 +283,8 @@ def nemotron_nano_9b_v2_sft_config() -> ConfigContainer:
     cfg.model.recompute_modules = None
     cfg.model.fine_grained_activation_offloading = False
     cfg.model.offload_modules = None
+    cfg.model.attention_softmax_in_fp32 = True
+    cfg.model.fp32_residual_connection = True 
 
     # FP8 & MXFP8 settings
     # Note: mixed_precision="bf16_mixed" is set as default
@@ -301,7 +307,7 @@ def nemotron_nano_9b_v2_sft_config() -> ConfigContainer:
     # _sft_common already sets seq_length=2048 and packed_sequence=True
     # Adjust pad_seq_to_mult for context parallelism
     if cfg.model.context_parallel_size > 1:
-        cfg.dataset.packed_sequence_specs.pad_seq_to_mult = cfg.model.context_parallel_size * 2
+        cfg.dataset.packed_sequence_specs.pad_seq_to_mult = cfg.model.context_parallel_size * cfg.model.tensor_model_parallel_size * 2
 
     # Optimizer overrides - Nemotron Nano v2 uses specific optimizer settings
     cfg.optimizer.adam_beta2 = 0.95
@@ -325,6 +331,13 @@ def nemotron_nano_9b_v2_sft_config() -> ConfigContainer:
     cfg.ddp.overlap_grad_reduce = True
     cfg.ddp.overlap_param_gather = False
     cfg.ddp.use_distributed_optimizer = True
+
+    print("--- FINAL CONFIGURATION ---")
+    print(f"TP: {cfg.model.tensor_model_parallel_size}")
+    print(f"CP: {cfg.model.context_parallel_size}")
+    print(f"MBS: {cfg.train.micro_batch_size}")
+    print(f"Seq Len: {cfg.model.seq_length}")
+    print("---------------------------")
 
     return cfg
 

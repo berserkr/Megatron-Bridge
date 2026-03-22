@@ -280,7 +280,7 @@ class NemotronHBridge(MegatronModelBridge):
         provider.masked_softmax_fusion = True
         provider.apply_query_key_layer_scaling = False
         provider.persist_layer_norm = True
-        provider.attention_softmax_in_fp32 = False
+        provider.attention_softmax_in_fp32 = True
         provider.first_last_layers_bf16 = True
         provider.is_hybrid_model = True
 

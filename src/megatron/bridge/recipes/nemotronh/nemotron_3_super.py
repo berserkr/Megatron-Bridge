@@ -98,7 +98,7 @@ def nemotron_3_super_pretrain_config(**user_kwargs: Unpack[Nemotron3SuperCommonK
         "context_parallelism": 1,
         "sequence_parallelism": True,
         "expert_tensor_parallelism": 1,
-        "expert_model_parallelism": 8,
+        "expert_model_parallelism": 8, 
         "precision_config": "nemotron_3_super_bf16_with_nvfp4_mixed",
     }
     combined_kwargs: Nemotron3SuperCommonKwargs = {**recommended_kwargs, **user_kwargs}
@@ -284,7 +284,7 @@ def _nemotron_3_super_common(
         ),
         tokenizer=tokenizer_config,
         checkpoint=CheckpointConfig(
-            async_save=True,
+            async_save=False,
             save_interval=save_interval,
             save=checkpoint_dir,
             load=checkpoint_dir,
@@ -493,7 +493,7 @@ def _nemotron_3_super_finetune_common(
         logger=logger_cfg,
         tokenizer=tokenizer_config,
         checkpoint=CheckpointConfig(
-            async_save=True,
+            async_save=False,
             save_interval=save_interval,
             save=checkpoint_dir,
             load=checkpoint_dir,

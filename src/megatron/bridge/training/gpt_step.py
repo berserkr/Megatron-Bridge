@@ -39,12 +39,25 @@ from megatron.bridge.training.utils.pg_utils import get_pg_collection
 logger = logging.getLogger(__name__)
 
 
+# Keys that are in BST (batch, seq) layout and must be sliced with a simple
+# contiguous chunk rather than via thd_get_partitioned_indices.
+# THD partitioning reorders tokens within sequences for ring-attention;
+# loss_mask and labels are flat per-token scalars that must stay contiguous
+# so that loss_mask[i] corresponds to the correct token on each CP rank.
+_BST_KEYS = {"loss_mask"}
+
+
 def _partition_packed_batch_for_cp(batch: dict[str, torch.Tensor], cp_size: int) -> dict[str, torch.Tensor]:
     """Partition THD/packed batches across context-parallel ranks.
 
     Uses transformer_engine's `thd_get_partitioned_indices` to slice sequence
     dimension aligned with packed cu_seqlens. This avoids the generic
     `get_batch_on_this_cp_rank` slicing which assumes contiguous sequence tokens.
+
+    NOTE: `loss_mask` and `labels` are in BST layout (batch, seq) — flat
+    per-token scalars — and must NOT go through thd_get_partitioned_indices.
+    They are sliced as a simple contiguous chunk instead so that each CP rank
+    receives the correct corresponding token mask/label values.
     """
 
     err_msg = "Please update Transformer Engine to >= 1.10 to use Context Parallel with THD format data"
@@ -79,8 +92,22 @@ def _partition_packed_batch_for_cp(batch: dict[str, torch.Tensor], cp_size: int)
     for key, val in batch.items():
         if val is None or key in skip_keys:
             continue
-        index = tex.thd_get_partitioned_indices(cu_seqlens, val.size(1), cp_size, cp_rank)
-        batch[key] = val.index_select(1, index)
+
+        if key in _BST_KEYS:
+            # loss_mask and labels are flat (batch, seq) tensors — one scalar
+            # per token. They must be sliced as a contiguous chunk so that
+            # rank i gets exactly the tokens that thd_get_partitioned_indices
+            # assigned to rank i's shard of the sequence.
+            seq_len = val.size(1)
+            assert seq_len % cp_size == 0, (
+                f"Sequence length {seq_len} must be divisible by cp_size {cp_size} "
+                f"for key '{key}'"
+            )
+            shard_size = seq_len // cp_size
+            batch[key] = val[:, cp_rank * shard_size : (cp_rank + 1) * shard_size].contiguous()
+        else:
+            index = tex.thd_get_partitioned_indices(cu_seqlens, val.size(1), cp_size, cp_rank)
+            batch[key] = val.index_select(1, index)
 
     return batch
 
@@ -185,6 +212,11 @@ def get_batch(
         # slice batch along sequence dimension for context parallelism
         batch = get_batch_on_this_cp_rank(batch, cp_group=pg_collection.cp)
 
+    cp_rank = parallel_state.get_context_parallel_rank()
+    if batch.get('loss_mask') is not None:
+        print(f"DEBUG CP RANK {cp_rank}: loss_mask sum: {batch['loss_mask'].sum()}")
+        print(f"DEBUG CP RANK {cp_rank}: loss_mask shape: {batch['loss_mask'].shape}")
+
     return (
         batch["tokens"],
         batch["labels"],
@@ -254,6 +286,8 @@ def _forward_step_common(
             "cu_seqlens_unpadded": cu_seqlens_unpadded,
             "cu_seqlens_unpadded_argmin": cu_seqlens_unpadded_argmin,
         }
+
+        print(f"DEBUG tokens.shape: {tokens.shape}", flush=True)
         forward_args["packed_seq_params"] = get_packed_seq_params(packed_seq_params)
 
     with straggler_timer:
@@ -266,7 +300,23 @@ def _forward_step_common(
             )
             return schedule_plan, loss_mask
         else:
-            output_tensor = model(**forward_args)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                output_tensor = model(**forward_args)
+
+    # DEBUG: check for NaN in output
+    cp_rank = parallel_state.get_context_parallel_rank()
+    if output_tensor is not None and torch.is_tensor(output_tensor):
+        if torch.isnan(output_tensor).any():
+            print(f"DEBUG CP RANK {cp_rank}: NaN in output_tensor! shape={output_tensor.shape}, "
+                f"nan_count={torch.isnan(output_tensor).sum()}, "
+                f"total={output_tensor.numel()}")
+        else:
+            print(f"DEBUG CP RANK {cp_rank}: output_tensor OK, shape={output_tensor.shape}")
+
+    pp_rank = parallel_state.get_pipeline_model_parallel_rank()
+    pp_size = parallel_state.get_pipeline_model_parallel_world_size()
+    is_last = is_pp_last_stage(pg_collection.pp)
+    print(f"DEBUG PP rank={pp_rank}/{pp_size} is_last={is_last} labels={'not None' if labels is not None else 'None'}")
 
     return output_tensor, loss_mask
 

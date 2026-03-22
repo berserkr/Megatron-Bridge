@@ -59,6 +59,13 @@ def masked_next_token_loss(
         - A dict containing reporting metrics on the loss and number of tokens across
           the data parallel ranks
     """
+    from megatron.core import parallel_state
+    cp_rank = parallel_state.get_context_parallel_rank()
+    nan_in_output = torch.isnan(output_tensor).any().item()
+    nan_in_mask = torch.isnan(loss_mask.float()).any().item()
+    mask_sum = loss_mask.sum().item()
+    print(f"DEBUG loss entry: CP={cp_rank} output_nan={nan_in_output} mask_nan={nan_in_mask} mask_sum={mask_sum} output_shape={output_tensor.shape} mask_shape={loss_mask.shape}", flush=True)
+
     if isinstance(output_tensor, tuple):
         losses = output_tensor[0].view(-1).float()
         loss_mask = output_tensor[1].view(-1).float()
@@ -66,10 +73,11 @@ def masked_next_token_loss(
         losses = output_tensor.view(-1).float()
     loss_mask = loss_mask.view(-1).float()
     loss = torch.sum(losses * loss_mask)
+    num_tokens_local = loss_mask.sum()
 
     # Check individual rank losses are not NaN prior to DP all-reduce.
     rerun_state_machine = get_rerun_state_machine()
-    if check_for_nan_in_loss:
+    if check_for_nan_in_loss and num_tokens_local > 0:
         rerun_state_machine.validate_result(
             result=loss,
             rejection_func=torch.isnan,
