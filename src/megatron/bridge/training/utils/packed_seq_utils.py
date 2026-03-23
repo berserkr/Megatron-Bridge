@@ -17,6 +17,34 @@ from __future__ import annotations
 import torch
 from megatron.core.packed_seq_params import PackedSeqParams
 
+def _sanitize_cu_seqlens(cu_seqlens: torch.Tensor, target_total: int | None = None) -> torch.Tensor:
+    """Ensure cumulative sequence lengths are valid for THD split ops.
+
+    The returned tensor is guaranteed to be non-decreasing with no duplicate
+    interior boundaries (which would create zero-length splits). If
+    ``target_total`` is provided and is larger than the final boundary, it is
+    appended as a final terminal boundary.
+    """
+
+    if cu_seqlens.numel() <= 1:
+        return cu_seqlens
+
+    deltas = cu_seqlens[1:] - cu_seqlens[:-1]
+    # Keep boundaries that strictly increase from the previous one.
+    keep_mask = torch.cat(
+        (
+            torch.ones(1, dtype=torch.bool, device=cu_seqlens.device),
+            deltas > 0,
+        )
+    )
+    sanitized = cu_seqlens[keep_mask]
+
+    if target_total is not None:
+        terminal = int(sanitized[-1].item())
+        if terminal < target_total:
+            sanitized = torch.cat((sanitized, sanitized.new_tensor([target_total])))
+
+    return sanitized
 
 def get_packed_seq_params(batch: dict[str, torch.Tensor]) -> PackedSeqParams:
     """Build packed sequence parameters from a batch dictionary.
@@ -55,7 +83,8 @@ def get_packed_seq_params(batch: dict[str, torch.Tensor]) -> PackedSeqParams:
             cu_seqlens_unpadded = cu_seqlens_unpadded[: cu_seqlens_unpadded_argmin.item()]
         else:
             cu_seqlens_unpadded = cu_seqlens_unpadded[: torch.argmin(cu_seqlens_unpadded)]
-
+    
+    cu_seqlens_unpadded = _sanitize_cu_seqlens(cu_seqlens_unpadded, target_total=int(cu_seqlens_padded[-1].item()))
     max_seqlen = batch["max_seqlen"].squeeze() if "max_seqlen" in batch else None
 
     # When cu_seqlens_unpadded is present (pad_seq_to_mult > 1), pass both unpadded and padded

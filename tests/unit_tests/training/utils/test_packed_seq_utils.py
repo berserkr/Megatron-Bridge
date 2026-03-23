@@ -178,3 +178,24 @@ class TestGetPackedSeqParams:
         # But cu_seqlens_q/kv should still be set
         assert result.cu_seqlens_q is not None
         assert result.cu_seqlens_kv is not None
+
+    def test_unpadded_sanitizes_duplicate_terminal_boundaries(self):
+        """Ensure duplicate unpadded boundaries do not produce zero-length splits."""
+        batch = {
+            "cu_seqlens": torch.IntTensor([0, 65536, -1]),
+            "cu_seqlens_argmin": torch.tensor(2),
+            "cu_seqlens_unpadded": torch.IntTensor([0, 65535, 65535, -1]),
+            "cu_seqlens_unpadded_argmin": torch.tensor(3),
+            "max_seqlen": torch.tensor(65536),
+        }
+
+        result = get_packed_seq_params(batch)
+
+        # trailing duplicate should be removed and terminal should be aligned
+        expected_unpadded = torch.IntTensor([0, 65535, 65536])
+        torch.testing.assert_close(result.cu_seqlens_q, expected_unpadded)
+        torch.testing.assert_close(result.cu_seqlens_kv, expected_unpadded)
+
+        expected_padded = torch.IntTensor([0, 65536])
+        torch.testing.assert_close(result.cu_seqlens_q_padded, expected_padded)
+        torch.testing.assert_close(result.cu_seqlens_kv_padded, expected_padded)
