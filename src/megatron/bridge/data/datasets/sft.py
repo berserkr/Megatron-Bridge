@@ -940,7 +940,10 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             for length in seqlens:
                 # length minus 1 because input_ids is truncated by 1 for labels
                 position_ids[-1].extend(list(range(length - 1)))
-                cu_seqlens[-1].append(cu_seqlens[-1][-1] + length - 1)
+                # skip 1-token spans (pure EOS padding from pad_seq_to_mult): length-1==0 would
+                # create a duplicate cu_seqlens entry, causing a 0-length split in RoPE/attention.
+                if length > 1:
+                    cu_seqlens[-1].append(cu_seqlens[-1][-1] + length - 1)
 
             # the last seq needs to be the max seq len because rope and attn kernels expect no padding
             assert cu_seqlens[-1][-1] <= max_length
@@ -971,7 +974,9 @@ class GPTSFTPackedDataset(GPTSFTDataset):
                     # Use seq_boundaries directly — exact sequence lengths, no EOS scanning needed.
                     # Works correctly whether or not data was pre-padded with pad_seq_to_mult.
                     seqlen = item["seq_boundaries"][i + 1] - item["seq_boundaries"][i] - 1
-                    cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1] + seqlen)
+                    # skip 0-length segments (1-token EOS-only spans from pad_seq_to_mult padding)
+                    if seqlen > 0:
+                        cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1] + seqlen)
 
                 # if extra paddings are added in the packed sequence, they can't be counted as
                 # actual tokens for training
@@ -1050,9 +1055,9 @@ class GPTSFTPackedDataset(GPTSFTDataset):
                 cu_seqlens_batch["cu_seqlens_unpadded"] = cu_seqlens_unpadded
                 cu_seqlens_batch["cu_seqlens_unpadded_argmin"] = cu_seqlens_unpadded_argmin
 
-            if int(os.environ.get("LOCAL_RANK", 0)) == 0:
-                print(f"DEBUG max_length: {max_length}", flush=True)
-                print(f"DEBUG cu sum: {cu_seqlens_batch['cu_seqlens'][0].max()}, unpad sum: {cu_seqlens_batch['cu_seqlens_unpadded'][0].max()}", flush=True)
+            #if int(os.environ.get("LOCAL_RANK", 0)) == 0:
+            #    print(f"DEBUG max_length: {max_length}", flush=True)
+            #    print(f"DEBUG cu sum: {cu_seqlens_batch['cu_seqlens'][0].max()}, unpad sum: {cu_seqlens_batch['cu_seqlens_unpadded'][0].max()}", flush=True)
                 
             """   
             if not getattr(self, '_debug_printed', False):

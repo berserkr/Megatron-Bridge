@@ -282,8 +282,8 @@ def qwen3_8b_pretrain_config() -> ConfigContainer:
     cfg.dataset.num_workers = 8
 
     # Model config (tensor_model_parallel_size, pipeline_model_parallel_size, etc.)
-    cfg.model.tensor_model_parallel_size = 4
-    cfg.model.pipeline_model_parallel_size = 1
+    cfg.model.tensor_model_parallel_size = 8
+    cfg.model.pipeline_model_parallel_size = 2
     cfg.model.pipeline_model_parallel_layout = None
     cfg.model.pipeline_dtype = None
     cfg.model.virtual_pipeline_model_parallel_size = None
