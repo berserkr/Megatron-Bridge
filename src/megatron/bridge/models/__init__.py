@@ -68,6 +68,13 @@ from megatron.bridge.models.glm_vl import (
     GLM45VBridge,
     GLM45VModelProvider,
 )
+from megatron.bridge.models.granite import (
+    GraniteBridge,
+    GraniteModelProvider,
+    GraniteModelProvider3B,
+    GraniteModelProvider8B,
+    GraniteModelProvider8BCode,
+)
 from megatron.bridge.models.gpt_oss import (
     GPTOSSBridge,
     GPTOSSProvider,
@@ -212,6 +219,12 @@ __all__ = [
     "ReplicatedMapping",
     "RowParallelMapping",
     "AutoMapping",
+    # Granite Models
+    "GraniteBridge",
+    "GraniteModelProvider",
+    "GraniteModelProvider3B",
+    "GraniteModelProvider8B",
+    "GraniteModelProvider8BCode",
     "Gemma3ModelProvider",
     "Gemma3ModelProvider1B",
     "Gemma3ModelProvider4B",

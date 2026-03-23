@@ -12,10 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from megatron.bridge.models.granite.granite_provider import GraniteModelProvider
 from megatron.bridge.models.granite.granite_bridge import GraniteBridge
+from megatron.bridge.models.granite.granite_provider import (
+    GraniteModelProvider,
+    GraniteModelProvider3B,
+    GraniteModelProvider8B,
+    GraniteModelProvider8BCode,
+)
 
 __all__ = [
+    "GraniteBridge",
     "GraniteModelProvider",
-    "GraniteBridge"
+    "GraniteModelProvider3B",
+    "GraniteModelProvider8B",
+    "GraniteModelProvider8BCode",
 ]
