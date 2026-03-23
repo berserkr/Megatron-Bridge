@@ -953,22 +953,6 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             if cu_seqlens[-1][-1] != max_length:
                 cu_seqlens[-1].append(max_length)
 
-            """ buggy code
-            if cu_seqlens_unpadded is not None:
-                for i in range(len(item["seq_boundaries"]) - 1):
-                    current_seq = item["input_ids"][item["seq_boundaries"][i] : item["seq_boundaries"][i + 1] - 1]
-
-                    # Stop unpadded lengths at the last non-eos token so padding eos are excluded.
-                    current_seq_arr = np.array(current_seq)
-                    non_eos_positions = np.where(current_seq_arr != self.tokenizer.eos_id)[0]
-                    seqlen_unpadded = non_eos_positions[-1] + 1 if non_eos_positions.size > 0 else 0
-                    cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1] + seqlen_unpadded)
-
-                # if extra paddings are added in the packed sequence, they can't be counted as
-                # actual tokens for training
-                if len(cu_seqlens[-1]) > len(cu_seqlens_unpadded[-1]):
-                    cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1])
-            """
             if cu_seqlens_unpadded is not None:
                 for i in range(len(item["seq_boundaries"]) - 1):
                     # Use seq_boundaries directly — exact sequence lengths, no EOS scanning needed.
@@ -981,7 +965,8 @@ class GPTSFTPackedDataset(GPTSFTDataset):
                 # if extra paddings are added in the packed sequence, they can't be counted as
                 # actual tokens for training
                 if len(cu_seqlens[-1]) > len(cu_seqlens_unpadded[-1]):
-                    #cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1])
+                    if int(os.environ.get("LOCAL_RANK", 0)) == 0:
+                        print(f"DEBUG sentinel: cu_seqlens={cu_seqlens[-1]}, cu_seqlens_unpadded={cu_seqlens_unpadded[-1]}, max_length={max_length}", flush=True)
                     cu_seqlens_unpadded[-1].append(max_length)
 
             if self.pad_cu_seqlens:
@@ -1022,29 +1007,22 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             cu_seqlens_argmin = torch.argmin(cu_seqlens, dim=1, keepdim=True)
             seqlens = cu_seqlens[:, 1:] - cu_seqlens[:, :-1]
             max_seqlen, _ = seqlens.max(dim=1, keepdim=True)
-
             if self.pad_cu_seqlens:
                 # If padding, use the global max seqlen, so that 'pad_cu_seqlens' is the same
-                # across all batches. This is maintly used compatiblity with megatron's implementation
+                # across all batches. This is mainly used for compatibility with megatron's implementation
                 # of cudagraphs, which uses the same cudagraphs over all batches.
                 dataset_max_seqlen = max(p["dataset_max_seqlen"] for p in self.pack_metadata)
                 min_pack_seq_len = min(p["min_packed_seqlen"] for p in self.pack_metadata)
                 padding_gap = max_length - min_pack_seq_len
-
                 # Use the larger of the two values to avoid NaN issues with attention kernel
                 safe_max_seqlen = max(dataset_max_seqlen, padding_gap)
                 max_seqlen = torch.IntTensor([safe_max_seqlen] * len(cu_seqlens))
-            else:
-                seqlens = cu_seqlens[:, 1:] - cu_seqlens[:, :-1]
-                max_seqlen, _ = seqlens.max(dim=1, keepdim=True)
-
             cu_seqlens_batch = {
                 "attention_mask": torch.LongTensor([1] * len(input_ids)),  # no attention mask is needed for packed seq
-                "cu_seqlens": torch.IntTensor(cu_seqlens),  # cu_seqlens_q must be in dtype torch.int32
+                "cu_seqlens": cu_seqlens,  # cu_seqlens_q must be in dtype torch.int32
                 "cu_seqlens_argmin": cu_seqlens_argmin,  # only required for perf
                 "max_seqlen": max_seqlen,  # only required for perf
             }
-
             # Only include cu_seqlens_unpadded when pad_seq_to_mult > 1 (actual CP padding)
             if cu_seqlens_unpadded is not None:
                 cu_seqlens_unpadded = self._collate_item(
@@ -1054,21 +1032,6 @@ class GPTSFTPackedDataset(GPTSFTDataset):
                 cu_seqlens_unpadded_argmin = torch.argmin(cu_seqlens_unpadded, dim=1, keepdim=True)
                 cu_seqlens_batch["cu_seqlens_unpadded"] = cu_seqlens_unpadded
                 cu_seqlens_batch["cu_seqlens_unpadded_argmin"] = cu_seqlens_unpadded_argmin
-
-            #if int(os.environ.get("LOCAL_RANK", 0)) == 0:
-            #    print(f"DEBUG max_length: {max_length}", flush=True)
-            #    print(f"DEBUG cu sum: {cu_seqlens_batch['cu_seqlens'][0].max()}, unpad sum: {cu_seqlens_batch['cu_seqlens_unpadded'][0].max()}", flush=True)
-                
-            """   
-            if not getattr(self, '_debug_printed', False):
-                print(f"DEBUG cu_seqlens[0]: {cu_seqlens_batch['cu_seqlens'][0]}", flush=True)
-                print(f"DEBUG max_length: {max_length}, input_ids lengths: {[len(x) for x in input_ids]}", flush=True)
-                if 'cu_seqlens_unpadded' in cu_seqlens_batch:
-                    print(f"DEBUG cu_seqlens_unpadded[0]: {cu_seqlens_batch['cu_seqlens_unpadded'][0]}", flush=True)
-                    print(f"DEBUG cu sum: {cu_seqlens_batch['cu_seqlens'][0].max()}, unpad sum: {cu_seqlens_batch['cu_seqlens_unpadded'][0].max()}", flush=True)
-                self._debug_printed = True
-            """
-
             processed_batch.update(cu_seqlens_batch)
         else:
             attention_mask = [self._create_attention_mask(max_length) for _ in batch]
