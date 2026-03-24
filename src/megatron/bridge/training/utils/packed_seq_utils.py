@@ -70,6 +70,7 @@ def get_packed_seq_params(batch: dict[str, torch.Tensor]) -> PackedSeqParams:
 
     cu_seqlens_argmin = batch.get("cu_seqlens_argmin")
     cu_seqlens_unpadded_argmin = batch.get("cu_seqlens_unpadded_argmin")
+    max_seqlen = batch["max_seqlen"].squeeze() if "max_seqlen" in batch else None
 
     # note: if argmin is not pre-computed in the dataloader, torch.argmin here will incur a
     # device-to-host synchronization, which can slow down training
@@ -78,14 +79,22 @@ def get_packed_seq_params(batch: dict[str, torch.Tensor]) -> PackedSeqParams:
     else:
         cu_seqlens_padded = cu_seqlens_padded[: torch.argmin(cu_seqlens_padded)]
 
+    padded_target_total = int(max_seqlen.item()) if max_seqlen is not None else None
+    cu_seqlens_padded = _sanitize_cu_seqlens(cu_seqlens_padded, target_total=padded_target_total)
+
     if cu_seqlens_unpadded is not None:
         if cu_seqlens_unpadded_argmin is not None:
             cu_seqlens_unpadded = cu_seqlens_unpadded[: cu_seqlens_unpadded_argmin.item()]
         else:
             cu_seqlens_unpadded = cu_seqlens_unpadded[: torch.argmin(cu_seqlens_unpadded)]
-    
-    cu_seqlens_unpadded = _sanitize_cu_seqlens(cu_seqlens_unpadded, target_total=int(cu_seqlens_padded[-1].item()))
-    max_seqlen = batch["max_seqlen"].squeeze() if "max_seqlen" in batch else None
+
+        if cu_seqlens_padded.numel() == 0:
+            raise ValueError("cu_seqlens_padded is empty after trimming; check cu_seqlens_argmin/collation.")
+
+        cu_seqlens_unpadded = _sanitize_cu_seqlens(
+            cu_seqlens_unpadded,
+            target_total=int(cu_seqlens_padded[-1].item()),
+        )
 
     # When cu_seqlens_unpadded is present (pad_seq_to_mult > 1), pass both unpadded and padded
     # for proper THD CP support. Otherwise, just use cu_seqlens_padded to avoid slower TE kernel.

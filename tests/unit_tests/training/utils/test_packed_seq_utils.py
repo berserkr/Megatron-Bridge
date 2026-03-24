@@ -199,3 +199,20 @@ class TestGetPackedSeqParams:
         expected_padded = torch.IntTensor([0, 65536])
         torch.testing.assert_close(result.cu_seqlens_q_padded, expected_padded)
         torch.testing.assert_close(result.cu_seqlens_kv_padded, expected_padded)
+
+    def test_padded_sanitizes_duplicate_terminal_boundaries_without_unpadded(self):
+        """Ensure padded-only mode also removes duplicate tail boundaries."""
+        batch = {
+            "cu_seqlens": torch.IntTensor([0, 65535, 65535, -1]),
+            "cu_seqlens_argmin": torch.tensor(3),
+            "max_seqlen": torch.tensor(65536),
+        }
+
+        result = get_packed_seq_params(batch)
+
+        # duplicate tail removed and max_seqlen boundary appended
+        expected = torch.IntTensor([0, 65535, 65536])
+        torch.testing.assert_close(result.cu_seqlens_q, expected)
+        torch.testing.assert_close(result.cu_seqlens_kv, expected)
+        assert result.cu_seqlens_q_padded is None
+        assert result.cu_seqlens_kv_padded is None
