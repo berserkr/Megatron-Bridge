@@ -1134,7 +1134,7 @@ def save_checkpoint_and_time(
     save_checkpoint(
         state,
         model,
-        None, # optimizer - so we can save large checkpoints...
+        optimizer, # optimizer - so we can save large checkpoints...
         opt_param_scheduler,
         num_floating_point_operations_so_far,
         checkpointing_context=checkpointing_context,

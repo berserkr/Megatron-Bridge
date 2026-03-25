@@ -158,30 +158,30 @@ class GraniteBridge(MegatronModelBridge):
             return weight
 
         original_dtype = weight.dtype
-        w = weight.float()
+        w = weight.detach().float()
 
         if hf_param == "model.embed_tokens.weight":
             # embed_tokens output is scaled by embedding_multiplier
-            w.mul_(m_e)
+            w = w * m_e
 
         elif hf_param == "lm_head.weight":
             # logits are divided by logits_scaling — so the weight gets divided
             # (we keep the multiplier convention: weight /= logits_scaling)
-            w.div_(m_l)
+            w = w / m_l
 
         elif re.search(r"self_attn\.o_proj\.weight$", hf_param):
             # Attention residual contribution is scaled by residual_multiplier
-            w.mul_(m_r)
+            w = w * m_r
 
         elif re.search(r"self_attn\.o_proj\.bias$", hf_param):
-            w.mul_(m_r)
+            w = w * m_r
 
         elif re.search(r"mlp\.down_proj\.weight$", hf_param):
             # MLP residual contribution is scaled by residual_multiplier
-            w.mul_(m_r)
+            w = w * m_r
 
         elif re.search(r"mlp\.down_proj\.bias$", hf_param):
-            w.mul_(m_r)
+            w = w * m_r
 
         else:
             return weight
@@ -209,16 +209,16 @@ class GraniteBridge(MegatronModelBridge):
         result = {}
         for hf_key, weight in converted_weights_dict.items():
             original_dtype = weight.dtype
-            w = weight.float()
+            w = weight.detach().float()
 
             if hf_key == "model.embed_tokens.weight":
-                w.div_(m_e)
+                w = w / m_e
             elif hf_key == "lm_head.weight":
-                w.mul_(m_l)
+                w = w * m_l
             elif re.search(r"self_attn\.o_proj\.(weight|bias)$", hf_key):
-                w.div_(m_r)
+                w = w / m_r
             elif re.search(r"mlp\.down_proj\.(weight|bias)$", hf_key):
-                w.div_(m_r)
+                w = w / m_r
             else:
                 result[hf_key] = weight
                 continue

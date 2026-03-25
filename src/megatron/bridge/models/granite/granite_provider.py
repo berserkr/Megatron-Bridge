@@ -125,3 +125,21 @@ class GraniteModelProvider8BCode(GraniteModelProvider):
     init_method_std: float = 0.01
     layernorm_epsilon: float = 1e-5
     vocab_size: int = 49152
+
+
+@dataclass
+class GraniteModelProvider30B(GraniteModelProvider):
+    """
+    Config for Granite 30B.
+    """
+
+    num_layers: int = 64
+    hidden_size: int = 4096
+    ffn_hidden_size: int = 32768
+    num_attention_heads: int = 32
+    num_query_groups: int = 8
+    seq_length: int = 131072
+    rotary_base: float = 50000000.0
+    init_method_std: float = 0.1
+    layernorm_epsilon: float = 1e-5
+    vocab_size: int = 100352

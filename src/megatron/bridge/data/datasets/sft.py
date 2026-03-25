@@ -211,7 +211,6 @@ def create_sft_dataset(
         return GPTSFTPackedParquetDataset(
             pack_metadata_file_path=pack_metadata_file_path,
             pad_cu_seqlens=pad_cu_seqlens,
-            pad_seq_to_mult=pad_seq_to_mult,   # ADD THIS
             **gpt_sft_dataset_kwargs,
             **kwargs,
         )
@@ -940,10 +939,7 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             for length in seqlens:
                 # length minus 1 because input_ids is truncated by 1 for labels
                 position_ids[-1].extend(list(range(length - 1)))
-                # skip 1-token spans (pure EOS padding from pad_seq_to_mult): length-1==0 would
-                # create a duplicate cu_seqlens entry, causing a 0-length split in RoPE/attention.
-                if length > 1:
-                    cu_seqlens[-1].append(cu_seqlens[-1][-1] + length - 1)
+                cu_seqlens[-1].append(cu_seqlens[-1][-1] + length - 1)
 
             # the last seq needs to be the max seq len because rope and attn kernels expect no padding
             assert cu_seqlens[-1][-1] <= max_length
@@ -955,19 +951,18 @@ class GPTSFTPackedDataset(GPTSFTDataset):
 
             if cu_seqlens_unpadded is not None:
                 for i in range(len(item["seq_boundaries"]) - 1):
-                    # Use seq_boundaries directly — exact sequence lengths, no EOS scanning needed.
-                    # Works correctly whether or not data was pre-padded with pad_seq_to_mult.
-                    seqlen = item["seq_boundaries"][i + 1] - item["seq_boundaries"][i] - 1
-                    # skip 0-length segments (1-token EOS-only spans from pad_seq_to_mult padding)
-                    if seqlen > 0:
-                        cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1] + seqlen)
+                    current_seq = item["input_ids"][item["seq_boundaries"][i] : item["seq_boundaries"][i + 1] - 1]
+
+                    # Stop unpadded lengths at the last non-eos token so padding eos are excluded.
+                    current_seq_arr = np.array(current_seq)
+                    non_eos_positions = np.where(current_seq_arr != self.tokenizer.eos_id)[0]
+                    seqlen_unpadded = non_eos_positions[-1] + 1 if non_eos_positions.size > 0 else 0
+                    cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1] + seqlen_unpadded)
 
                 # if extra paddings are added in the packed sequence, they can't be counted as
                 # actual tokens for training
                 if len(cu_seqlens[-1]) > len(cu_seqlens_unpadded[-1]):
-                    if int(os.environ.get("LOCAL_RANK", 0)) == 0:
-                        print(f"DEBUG sentinel: cu_seqlens={cu_seqlens[-1]}, cu_seqlens_unpadded={cu_seqlens_unpadded[-1]}, max_length={max_length}", flush=True)
-                    cu_seqlens_unpadded[-1].append(max_length)
+                    cu_seqlens_unpadded[-1].append(cu_seqlens_unpadded[-1][-1])
 
             if self.pad_cu_seqlens:
                 # pad cu_seqlens to a constant shape with zero length sequences
@@ -1007,22 +1002,29 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             cu_seqlens_argmin = torch.argmin(cu_seqlens, dim=1, keepdim=True)
             seqlens = cu_seqlens[:, 1:] - cu_seqlens[:, :-1]
             max_seqlen, _ = seqlens.max(dim=1, keepdim=True)
+
             if self.pad_cu_seqlens:
                 # If padding, use the global max seqlen, so that 'pad_cu_seqlens' is the same
-                # across all batches. This is mainly used for compatibility with megatron's implementation
+                # across all batches. This is maintly used compatiblity with megatron's implementation
                 # of cudagraphs, which uses the same cudagraphs over all batches.
                 dataset_max_seqlen = max(p["dataset_max_seqlen"] for p in self.pack_metadata)
                 min_pack_seq_len = min(p["min_packed_seqlen"] for p in self.pack_metadata)
                 padding_gap = max_length - min_pack_seq_len
+
                 # Use the larger of the two values to avoid NaN issues with attention kernel
                 safe_max_seqlen = max(dataset_max_seqlen, padding_gap)
                 max_seqlen = torch.IntTensor([safe_max_seqlen] * len(cu_seqlens))
+            else:
+                seqlens = cu_seqlens[:, 1:] - cu_seqlens[:, :-1]
+                max_seqlen, _ = seqlens.max(dim=1, keepdim=True)
+
             cu_seqlens_batch = {
                 "attention_mask": torch.LongTensor([1] * len(input_ids)),  # no attention mask is needed for packed seq
-                "cu_seqlens": cu_seqlens,  # cu_seqlens_q must be in dtype torch.int32
+                "cu_seqlens": torch.IntTensor(cu_seqlens),  # cu_seqlens_q must be in dtype torch.int32
                 "cu_seqlens_argmin": cu_seqlens_argmin,  # only required for perf
                 "max_seqlen": max_seqlen,  # only required for perf
             }
+
             # Only include cu_seqlens_unpadded when pad_seq_to_mult > 1 (actual CP padding)
             if cu_seqlens_unpadded is not None:
                 cu_seqlens_unpadded = self._collate_item(
@@ -1032,6 +1034,7 @@ class GPTSFTPackedDataset(GPTSFTDataset):
                 cu_seqlens_unpadded_argmin = torch.argmin(cu_seqlens_unpadded, dim=1, keepdim=True)
                 cu_seqlens_batch["cu_seqlens_unpadded"] = cu_seqlens_unpadded
                 cu_seqlens_batch["cu_seqlens_unpadded_argmin"] = cu_seqlens_unpadded_argmin
+
             processed_batch.update(cu_seqlens_batch)
         else:
             attention_mask = [self._create_attention_mask(max_length) for _ in batch]
@@ -1228,7 +1231,7 @@ class GPTSFTChatDataset(GPTSFTDataset):
         if self.pad_to_max_length:
             max_length = self.max_seq_length
         else:
-            max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, self.pad_seq_length_to_mult))
+            max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, 16))
         assert max_length <= self.max_seq_length
 
         position_ids = [list(range(max_length)) for _ in batch]

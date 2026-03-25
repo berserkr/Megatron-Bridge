@@ -18,6 +18,7 @@ from megatron.bridge.models.granite.granite_provider import (
     GraniteModelProvider3B,
     GraniteModelProvider8B,
     GraniteModelProvider8BCode,
+    GraniteModelProvider30B,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "GraniteModelProvider3B",
     "GraniteModelProvider8B",
     "GraniteModelProvider8BCode",
+    "GraniteModelProvider30B",
 ]
