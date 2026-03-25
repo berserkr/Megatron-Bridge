@@ -1,9 +1,9 @@
 #!/bin/bash
 
 LOCAL_HF_CKPT=/mnt/vast/proj/checkpoints/bathen/models/base/Qwen3-8B-Base
-SAVED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/sft/Qwen3-8B-Base-cp4-256k-test-16nodes/iter_0000100
-EXPORTED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/exports/Qwen3-8B-Base-cp4-256k-test-16nodes-hf
-TP=4
+SAVED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/sft/Qwen3-8B-Base-cp1-debug-16nodes-v2/iter_0002000
+EXPORTED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/exports/Qwen3-8B-Base-cp1-debug-16nodes-v2-hf
+TP=1
 PP=1
 EP=1
 ETP=1
