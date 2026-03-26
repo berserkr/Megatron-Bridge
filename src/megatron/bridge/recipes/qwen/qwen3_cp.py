@@ -51,7 +51,7 @@ def qwen3_8b_cp_validation_config() -> ConfigContainer:
     cfg = _sft_common()
 
     # -- Model ----------------------------------------------------------------
-    cfg.model = AutoBridge.from_hf_pretrained("/mnt/vast/proj/checkpoints/bathen/models/base/Qwen3-8B-Base").to_megatron_provider(load_weights=False)
+    cfg.model = AutoBridge.from_hf_pretrained("/mnt/vast/proj/checkpoints/bathen/models/base/Qwen3-8B-Base").to_megatron_provider(load_weights=True)
 
     # -- Tokenizer ------------------------------------------------------------
     cfg.tokenizer.tokenizer_model = "/mnt/vast/proj/checkpoints/bathen/models/base/Qwen3-8B-Base"
