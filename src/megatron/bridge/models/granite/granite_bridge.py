@@ -111,16 +111,17 @@ class GraniteBridge(MegatronModelBridge):
 
         Raw Granite checkpoints store these in config.json.  After running
         transmute_granite.py the values are reset to 1.0, so this method
-        returns (1.0, 1.0, 1.0) for pre-transmuted weights, causing a no-op.
+        returns (1.0, 1.0, 1.0, 1.0) for pre-transmuted weights, causing a no-op.
 
         Returns:
-            (embedding_multiplier, residual_multiplier, logits_scaling)
+            (embedding_multiplier, residual_multiplier, logits_scaling, attention_multiplier)
         """
         config = self.hf_config
         m_e = float(getattr(config, "embedding_multiplier", 1.0))
         m_r = float(getattr(config, "residual_multiplier", 1.0))
         m_l = float(getattr(config, "logits_scaling", 1.0))
-        return m_e, m_r, m_l
+        m_a = float(getattr(config, "attention_multiplier", 1.0))
+        return m_e, m_r, m_l, m_a
 
     def maybe_modify_loaded_hf_weight(
         self, hf_param: str | dict, hf_state_dict: Mapping[str, torch.Tensor]
@@ -129,27 +130,33 @@ class GraniteBridge(MegatronModelBridge):
         Bake Granite's scaling multipliers into the weights on-the-fly during
         HF → Megatron loading.
 
-        Granite's forward pass applies three scaling factors that are stored in
-        the config rather than the weights:
+        Granite's forward pass applies scaling factors stored in the config
+        rather than the weights:
 
           output  = embed_tokens(token_ids) * embedding_multiplier
-          hidden += attn_out   * residual_multiplier   (o_proj)
-          hidden += mlp_out    * residual_multiplier   (down_proj)
+          attn_out = attn(hidden) * attention_multiplier   (before o_proj)
+          hidden += o_proj(attn_out) * residual_multiplier
+          hidden += mlp_out * residual_multiplier          (down_proj)
           logits  = lm_head(hidden) / logits_scaling
 
         We bake these into the corresponding weight tensors so that
         Megatron's standard GPTModel (which has no knowledge of these
         config-level scalars) produces identical results.
 
+        For o_proj, the combined scaling is attention_multiplier * residual_multiplier
+        because attention_multiplier is applied before the linear projection
+        and residual_multiplier after it.  Since o_proj is linear:
+          o_proj(m_a * x) * m_r = (m_a * m_r) * o_proj(x)   [when no bias]
+
         For pre-transmuted weights the multipliers are already 1.0 (or very
         close), so the multiplication/division is effectively a no-op.
         """
         weight = super().maybe_modify_loaded_hf_weight(hf_param, hf_state_dict)
 
-        m_e, m_r, m_l = self._get_granite_multipliers()
+        m_e, m_r, m_l, m_a = self._get_granite_multipliers()
 
         # Fast path: all multipliers are trivial
-        if m_e == 1.0 and m_r == 1.0 and m_l == 1.0:
+        if m_e == 1.0 and m_r == 1.0 and m_l == 1.0 and m_a == 1.0:
             return weight
 
         if not isinstance(hf_param, str):
@@ -170,10 +177,13 @@ class GraniteBridge(MegatronModelBridge):
             w = w / m_l
 
         elif re.search(r"self_attn\.o_proj\.weight$", hf_param):
-            # Attention residual contribution is scaled by residual_multiplier
-            w = w * m_r
+            # attention_multiplier scales attn output before o_proj (linear),
+            # residual_multiplier scales o_proj output before residual add.
+            # Combined: o_proj.weight *= attention_multiplier * residual_multiplier
+            w = w * m_a * m_r
 
         elif re.search(r"self_attn\.o_proj\.bias$", hf_param):
+            # Bias is only scaled by residual_multiplier (applied after o_proj)
             w = w * m_r
 
         elif re.search(r"mlp\.down_proj\.weight$", hf_param):
@@ -201,9 +211,9 @@ class GraniteBridge(MegatronModelBridge):
         scaled during loading are unscaled here so the exported HF checkpoint is
         consistent with the original config.
         """
-        m_e, m_r, m_l = self._get_granite_multipliers()
+        m_e, m_r, m_l, m_a = self._get_granite_multipliers()
 
-        if m_e == 1.0 and m_r == 1.0 and m_l == 1.0:
+        if m_e == 1.0 and m_r == 1.0 and m_l == 1.0 and m_a == 1.0:
             return converted_weights_dict
 
         result = {}
@@ -215,7 +225,11 @@ class GraniteBridge(MegatronModelBridge):
                 w = w / m_e
             elif hf_key == "lm_head.weight":
                 w = w * m_l
-            elif re.search(r"self_attn\.o_proj\.(weight|bias)$", hf_key):
+            elif re.search(r"self_attn\.o_proj\.weight$", hf_key):
+                # Inverse of combined attention_multiplier * residual_multiplier
+                w = w / (m_a * m_r)
+            elif re.search(r"self_attn\.o_proj\.bias$", hf_key):
+                # Bias only had residual_multiplier applied
                 w = w / m_r
             elif re.search(r"mlp\.down_proj\.(weight|bias)$", hf_key):
                 w = w / m_r
