@@ -90,15 +90,15 @@ def transmute_granite(source_path: str, target_path: str) -> None:
         print(f"  embed_tokens.weight *= {m_e}")
         model.model.embed_tokens.weight.data.mul_(m_e)
 
-    # ----- Bake attention_multiplier + residual_multiplier into o_proj -----
-    # attention_multiplier scales attn output before o_proj (linear, no bias case):
-    #   o_proj(m_a * x) * m_r = (m_a * m_r) * o_proj(x)
-    # For bias: bias is only scaled by m_r (applied after the linear projection).
-    o_proj_weight_scale = m_a * m_r
-    if o_proj_weight_scale != 1.0 or m_r != 1.0:
-        print(f"  Scaling {len(model.model.layers)} layers' o_proj by {o_proj_weight_scale} (attn*res), down_proj by {m_r}")
+    # ----- Bake residual_multiplier into o_proj and down_proj -----
+    # NOTE: attention_multiplier is applied to attention *scores* (before softmax),
+    # not to the attention output. Since softmax is non-linear, it CANNOT be baked
+    # into o_proj weights. It must remain as a runtime config value.
+    # Only residual_multiplier (applied after o_proj/down_proj) can be baked.
+    if m_r != 1.0:
+        print(f"  Scaling {len(model.model.layers)} layers' o_proj by {m_r} (res), down_proj by {m_r}")
         for layer in model.model.layers:
-            layer.self_attn.o_proj.weight.data.mul_(o_proj_weight_scale)
+            layer.self_attn.o_proj.weight.data.mul_(m_r)
             if layer.self_attn.o_proj.bias is not None:
                 layer.self_attn.o_proj.bias.data.mul_(m_r)
 
@@ -115,11 +115,13 @@ def transmute_granite(source_path: str, target_path: str) -> None:
         print(f"  lm_head.weight /= {m_l}")
         model.lm_head.weight.data.div_(m_l)
 
-    # ----- Reset config multipliers to 1.0 -----
+    # ----- Reset config multipliers to 1.0 (except attention_multiplier) -----
+    # attention_multiplier cannot be baked — it scales attention scores before
+    # softmax and must remain a runtime parameter.
     config.embedding_multiplier = 1.0
     config.residual_multiplier = 1.0
     config.logits_scaling = 1.0
-    config.attention_multiplier = 1.0
+    # config.attention_multiplier is intentionally NOT reset
 
     # ----- Save -----
     print(f"Saving transmuted model to {target_path} ...")

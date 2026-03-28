@@ -12,35 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Granite models
-from .granite import (
-    granite_3b_peft_config,
-    granite_3b_pretrain_config,
-    granite_3b_sft_config,
-    granite_8b_code_peft_config,
-    granite_8b_code_sft_config,
-    granite_8b_peft_config,
-    granite_8b_pretrain_config,
-    granite_8b_sft_config,
-    granite_30b_peft_config,
-    granite_30b_pretrain_config,
-    granite_30b_sft_config,
-)
-
+from megatron.bridge.recipes.granite.granite_8b import granite_8b_finetune_config
+from megatron.bridge.recipes.granite.granite_30b import granite_30b_finetune_config
 
 __all__ = [
-    # Granite pretrain configs
-    "granite_3b_pretrain_config",
-    "granite_8b_pretrain_config",
-    "granite_30b_pretrain_config",
-    # Granite SFT configs
-    "granite_3b_sft_config",
-    "granite_8b_sft_config",
-    "granite_8b_code_sft_config",
-    "granite_30b_sft_config",
-    # Granite PEFT configs
-    "granite_3b_peft_config",
-    "granite_8b_peft_config",
-    "granite_8b_code_peft_config",
-    "granite_30b_peft_config",
+    "granite_8b_finetune_config",
+    "granite_30b_finetune_config",
 ]

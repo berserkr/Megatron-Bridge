@@ -59,6 +59,14 @@ def main(hf_model_id: str = HF_MODEL_ID, output_dir: str = None, trust_remote_co
         ),
     )
     megatron_model = bridge.to_megatron_model(wrap_with_ddp=False)
+
+    # Debug: show actual diffs for mismatched weights
+    for name, param in bridge.export_hf_weights(megatron_model, show_progress=False):
+        orig = bridge.hf_pretrained.state[name].to(param.device).float()
+        diff = (param.float() - orig).abs().max().item()
+        if diff > 1e-6:
+            console.print(f"[yellow]{name}: max_diff={diff:.6e}[/yellow]")
+
     console.print(weights_verification_table(bridge, megatron_model))
 
     console.print(f"Saving HF-ckpt in {save_path}...")

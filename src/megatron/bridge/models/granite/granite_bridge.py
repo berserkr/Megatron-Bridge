@@ -85,7 +85,8 @@ class GraniteBridge(MegatronModelBridge):
             rotary_base=rope_theta_from_hf(hf_config),
             init_method_std=hf_config.initializer_range,
             make_vocab_size_divisible_by=self.make_vocab_size_divisible_by(hf_config.vocab_size),
-            # Granite always untied: lm_head and embed_tokens are scaled independently
+            # Must untie when multipliers differ (embedding_multiplier vs logits_scaling)
+            # because Megatron can't apply different scaling to a shared weight.
             share_embeddings_and_output_weights=False,
             # Attention biases (False for most Granite models)
             add_qkv_bias=getattr(hf_config, "attention_bias", False),
@@ -98,6 +99,10 @@ class GraniteBridge(MegatronModelBridge):
             params_dtype=self.dtype_from_hf(hf_config, default=torch.float32),
             kv_channels=getattr(hf_config, "head_dim", None),
         )
+
+        # attention_multiplier scales attention scores before softmax — it cannot
+        # be baked into weights. Pass it as the softmax scaling factor to Megatron-Core.
+        provider.softmax_scale = float(getattr(hf_config, "attention_multiplier", 1.0))
 
         return provider
 
@@ -134,23 +139,32 @@ class GraniteBridge(MegatronModelBridge):
         rather than the weights:
 
           output  = embed_tokens(token_ids) * embedding_multiplier
-          attn_out = attn(hidden) * attention_multiplier   (before o_proj)
+          attn_scores = (Q @ K^T) * attention_multiplier   (before softmax)
           hidden += o_proj(attn_out) * residual_multiplier
           hidden += mlp_out * residual_multiplier          (down_proj)
           logits  = lm_head(hidden) / logits_scaling
 
-        We bake these into the corresponding weight tensors so that
-        Megatron's standard GPTModel (which has no knowledge of these
-        config-level scalars) produces identical results.
-
-        For o_proj, the combined scaling is attention_multiplier * residual_multiplier
-        because attention_multiplier is applied before the linear projection
-        and residual_multiplier after it.  Since o_proj is linear:
-          o_proj(m_a * x) * m_r = (m_a * m_r) * o_proj(x)   [when no bias]
+        We bake embedding_multiplier, residual_multiplier, and logits_scaling
+        into the corresponding weight tensors. attention_multiplier CANNOT be
+        baked because it scales attention scores before softmax (non-linear),
+        and must be handled separately by the Megatron attention layer.
 
         For pre-transmuted weights the multipliers are already 1.0 (or very
         close), so the multiplication/division is effectively a no-op.
         """
+        # Handle tied weights: lm_head.weight may not exist in HF state dict
+        # when tie_word_embeddings=True. Fall back to embed_tokens.weight.
+        if isinstance(hf_param, str) and hf_param == "lm_head.weight" and hf_param not in hf_state_dict:
+            hf_param = "model.embed_tokens.weight"
+            weight = super().maybe_modify_loaded_hf_weight(hf_param, hf_state_dict)
+            # Apply logits_scaling (not embedding_multiplier) to this copy
+            m_e, m_r, m_l, m_a = self._get_granite_multipliers()
+            if m_l != 1.0:
+                original_dtype = weight.dtype
+                w = weight.detach().float() / m_l
+                return w.to(original_dtype)
+            return weight
+
         weight = super().maybe_modify_loaded_hf_weight(hf_param, hf_state_dict)
 
         m_e, m_r, m_l, m_a = self._get_granite_multipliers()
@@ -173,14 +187,13 @@ class GraniteBridge(MegatronModelBridge):
 
         elif hf_param == "lm_head.weight":
             # logits are divided by logits_scaling — so the weight gets divided
-            # (we keep the multiplier convention: weight /= logits_scaling)
             w = w / m_l
 
         elif re.search(r"self_attn\.o_proj\.weight$", hf_param):
-            # attention_multiplier scales attn output before o_proj (linear),
-            # residual_multiplier scales o_proj output before residual add.
-            # Combined: o_proj.weight *= attention_multiplier * residual_multiplier
-            w = w * m_a * m_r
+            # Only residual_multiplier can be baked into o_proj.
+            # attention_multiplier scales attention *scores* (before softmax),
+            # not the output, so it cannot be absorbed into any weight.
+            w = w * m_r
 
         elif re.search(r"self_attn\.o_proj\.bias$", hf_param):
             # Bias is only scaled by residual_multiplier (applied after o_proj)
@@ -212,13 +225,18 @@ class GraniteBridge(MegatronModelBridge):
         consistent with the original config.
         """
         m_e, m_r, m_l, m_a = self._get_granite_multipliers()
-
-        if m_e == 1.0 and m_r == 1.0 and m_l == 1.0 and m_a == 1.0:
-            return converted_weights_dict
+        no_scaling = (m_e == 1.0 and m_r == 1.0 and m_l == 1.0 and m_a == 1.0)
 
         result = {}
         for hf_key, weight in converted_weights_dict.items():
-            original_dtype = weight.dtype
+            # Use the original HF weight's dtype when available, so the exported
+            # checkpoint matches what HF originally had (e.g. bfloat16).
+            target_dtype = hf_state_dict[hf_key].dtype if hf_key in hf_state_dict else weight.dtype
+
+            if no_scaling:
+                result[hf_key] = weight.to(target_dtype)
+                continue
+
             w = weight.detach().float()
 
             if hf_key == "model.embed_tokens.weight":
@@ -226,18 +244,18 @@ class GraniteBridge(MegatronModelBridge):
             elif hf_key == "lm_head.weight":
                 w = w * m_l
             elif re.search(r"self_attn\.o_proj\.weight$", hf_key):
-                # Inverse of combined attention_multiplier * residual_multiplier
-                w = w / (m_a * m_r)
+                # Inverse of residual_multiplier only (attention_multiplier is not baked)
+                w = w / m_r
             elif re.search(r"self_attn\.o_proj\.bias$", hf_key):
                 # Bias only had residual_multiplier applied
                 w = w / m_r
             elif re.search(r"mlp\.down_proj\.(weight|bias)$", hf_key):
                 w = w / m_r
             else:
-                result[hf_key] = weight
+                result[hf_key] = weight.to(target_dtype)
                 continue
 
-            result[hf_key] = w.to(original_dtype)
+            result[hf_key] = w.to(target_dtype)
 
         return result
 
@@ -250,12 +268,29 @@ class GraniteBridge(MegatronModelBridge):
         config = self.hf_config
         attention_bias = getattr(config, "attention_bias", False)
         mlp_bias = getattr(config, "mlp_bias", False)
+        tied = getattr(config, "tie_word_embeddings", False)
 
         # ---- 1:1 parameter mappings ----
         param_mappings = {
             "embedding.word_embeddings.weight": "model.embed_tokens.weight",
-            "output_layer.weight": "lm_head.weight",
             "decoder.final_layernorm.weight": "model.norm.weight",
+        }
+
+        # When HF has tied weights, lm_head.weight doesn't exist in the checkpoint.
+        # We map to lm_head.weight with allow_hf_name_mismatch=True so
+        # build_conversion_tasks doesn't skip it. maybe_modify_loaded_hf_weight
+        # handles the fallback to model.embed_tokens.weight and applies / logits_scaling.
+        if tied:
+            lm_head_mapping = AutoMapping(
+                megatron_param="output_layer.weight",
+                hf_param="lm_head.weight",
+            )
+            lm_head_mapping.allow_hf_name_mismatch = True
+        else:
+            lm_head_mapping = None
+            param_mappings["output_layer.weight"] = "lm_head.weight"
+
+        param_mappings.update({
             # Per-layer pre-attention and pre-MLP layer norms (fused with linear in TE)
             "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": (
                 "model.layers.*.input_layernorm.weight"
@@ -269,7 +304,7 @@ class GraniteBridge(MegatronModelBridge):
             ),
             # MLP down projection
             "decoder.layers.*.mlp.linear_fc2.weight": "model.layers.*.mlp.down_proj.weight",
-        }
+        })
 
         # Optional per-layer output projection bias (attention_bias in HF config)
         if attention_bias:
@@ -287,6 +322,10 @@ class GraniteBridge(MegatronModelBridge):
             AutoMapping(megatron_param=meg, hf_param=hf)
             for meg, hf in param_mappings.items()
         ]
+
+        # Add the tied lm_head mapping if needed
+        if lm_head_mapping is not None:
+            mapping_list.append(lm_head_mapping)
 
         # ---- QKV concatenation ----
         mapping_list.append(
