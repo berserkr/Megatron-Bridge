@@ -969,8 +969,16 @@ class MegatronModelBridge(MegatronPeftBridge, Generic[HFPreTrained, ModelProvide
 
         hf_state_dict: Mapping[str, torch.Tensor] = hf_pretrained.state if hasattr(hf_pretrained, "state") else {}
 
+        #for task in self._with_progress_tracking(megatron_to_hf_tasks, "Converting to HuggingFace", show_progress):
+        #    converted_weights_dict = task.mapping.megatron_to_hf(task.param_weight, task.megatron_module)
+        none_weight_tasks = [t for t in megatron_to_hf_tasks if t is not None and t.param_weight is None]
+        print_rank_0(f"[export-debug] total tasks: {len(megatron_to_hf_tasks)}, placeholder (cross-PP) tasks: {len(none_weight_tasks)}")
         for task in self._with_progress_tracking(megatron_to_hf_tasks, "Converting to HuggingFace", show_progress):
+            if task.param_weight is None:
+                print_rank_0(f"[export-debug] broadcasting cross-PP param: {task.global_param_name}")
             converted_weights_dict = task.mapping.megatron_to_hf(task.param_weight, task.megatron_module)
+            if not converted_weights_dict:
+                print_rank_0(f"[export-debug] WARNING: empty result for {task.global_param_name} (param_weight={'None' if task.param_weight is None else 'present'})")
             converted_weights_dict = self.maybe_modify_converted_hf_weight(
                 task,
                 converted_weights_dict,

@@ -80,6 +80,7 @@ class _MTPFlatteningMapping(MegatronParamMapping[torch.Tensor]):
         *,
         mtp_layers_per_block: int,
         inner_override: Optional[int] = None,
+        mapping_cls=None,
     ):
         # NOTE: We intentionally bypass wildcard validation because Megatron has
         # 2+N wildcards while HF has 1+N in the flattened scheme.
@@ -87,6 +88,7 @@ class _MTPFlatteningMapping(MegatronParamMapping[torch.Tensor]):
         self.hf_param = hf_param
         self._mtp_layers_per_block = int(mtp_layers_per_block)
         self._inner_override = inner_override
+        self._mapping_cls = mapping_cls or AutoMapping
 
         if self._mtp_layers_per_block <= 0:
             raise ValueError(
@@ -131,7 +133,7 @@ class _MTPFlatteningMapping(MegatronParamMapping[torch.Tensor]):
             megatron_captures = (str(outer), str(inner_eff), *remaining)
             resolved_megatron = _replace_wildcards(self.megatron_param, megatron_captures)
             resolved_hf = _replace_wildcards(self.hf_param, captures)
-            return AutoMapping(megatron_param=resolved_megatron, hf_param=resolved_hf)
+            return self._mapping_cls(megatron_param=resolved_megatron, hf_param=resolved_hf)
 
         # Treat captures as coming from the Megatron pattern.
         # captures: (outer, inner, [maybe expert idx...]) for nested params
@@ -161,9 +163,9 @@ class _MTPFlatteningMapping(MegatronParamMapping[torch.Tensor]):
         hf_captures = (str(flat), *remaining)
         resolved_hf = _replace_wildcards(self.hf_param, hf_captures)
 
-        return AutoMapping(megatron_param=resolved_megatron, hf_param=resolved_hf)
+        return self._mapping_cls(megatron_param=resolved_megatron, hf_param=resolved_hf)
 
-    # These are never called: this mapping always resolves into an AutoMapping.
+    # These are never called: this mapping always resolves into a concrete mapping.
     def hf_to_megatron(self, hf_weights: torch.Tensor, megatron_module: torch.nn.Module) -> torch.Tensor:
         raise NotImplementedError
 
@@ -490,5 +492,41 @@ class NemotronHBridge(MegatronModelBridge):
                     ),
                 ]
             )
+
+            # MTP Mamba mixer layers (parallel the backbone Mamba mappings above)
+            for mixer_sub_module in ["A_log", "D", "dt_bias", "norm.weight"]:
+                mapping_list.append(
+                    _MTPFlatteningMapping(
+                        megatron_param=f"mtp.layers.*.mtp_model_layer.layers.*.mixer.{mixer_sub_module}",
+                        hf_param=f"mtp.layers.*.mixer.{mixer_sub_module}",
+                        mtp_layers_per_block=mtp_layers_per_block,
+                        mapping_cls=ColumnParallelMapping,
+                    )
+                )
+            mapping_list.append(
+                _MTPFlatteningMapping(
+                    megatron_param="mtp.layers.*.mtp_model_layer.layers.*.mixer.out_proj.weight",
+                    hf_param="mtp.layers.*.mixer.out_proj.weight",
+                    mtp_layers_per_block=mtp_layers_per_block,
+                    mapping_cls=RowParallelMapping,
+                )
+            )
+            mapping_list.append(
+                _MTPFlatteningMapping(
+                    megatron_param="mtp.layers.*.mtp_model_layer.layers.*.mixer.in_proj.weight",
+                    hf_param="mtp.layers.*.mixer.in_proj.weight",
+                    mtp_layers_per_block=mtp_layers_per_block,
+                    mapping_cls=MambaInProjMapping,
+                )
+            )
+            for conv1d_sub_module in ["weight", "bias"]:
+                mapping_list.append(
+                    _MTPFlatteningMapping(
+                        megatron_param=f"mtp.layers.*.mtp_model_layer.layers.*.mixer.conv1d.{conv1d_sub_module}",
+                        hf_param=f"mtp.layers.*.mixer.conv1d.{conv1d_sub_module}",
+                        mtp_layers_per_block=mtp_layers_per_block,
+                        mapping_cls=MambaConv1dMapping,
+                    )
+                )
 
         return MegatronMappingRegistry(*mapping_list)

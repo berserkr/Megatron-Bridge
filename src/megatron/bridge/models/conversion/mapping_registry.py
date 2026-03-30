@@ -15,7 +15,7 @@
 import re
 from typing import List, Optional
 
-from megatron.bridge.models.conversion.param_mapping import AutoMapping, MegatronParamMapping
+from megatron.bridge.models.conversion.param_mapping import AutoMapping, MegatronParamMapping, ReplicatedMapping
 
 
 class MegatronMappingRegistry:
@@ -103,6 +103,8 @@ class MegatronMappingRegistry:
                     break
                 if isinstance(mapping, AutoMapping):
                     new_mapping = AutoMapping(new_megatron_param, mapping.hf_param, mapping.permute_dims)
+                elif isinstance(mapping, ReplicatedMapping):
+                    new_mapping = ReplicatedMapping(new_megatron_param, mapping.hf_param)
                 else:
                     print(f"Unrecognized mapping type for {mapping.megatron_param} -> {mapping.hf_param}")
                     break
