@@ -2,6 +2,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 
 model_path = "/mnt/vast/proj/checkpoints/bathen/models/exports/nemotron-super-v3-rl"
+model_path = "/mnt/vast/proj/checkpoints/bathen/models/exports/granite30b_sft_128k"
 
 tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 model = AutoModelForCausalLM.from_pretrained(
