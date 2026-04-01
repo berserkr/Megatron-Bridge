@@ -35,12 +35,13 @@ Reference:
   https://huggingface.co/ibm-granite
 """
 
+import logging
 import re
-from typing import Dict, Mapping, Optional
+from typing import Dict, List, Mapping, Optional, Union
 
 import torch
 from megatron.core.models.gpt.gpt_model import GPTModel
-from transformers import GraniteForCausalLM
+from transformers import GraniteForCausalLM, GraniteMoeForCausalLM
 
 from megatron.bridge.models.conversion.mapping_registry import MegatronMappingRegistry
 from megatron.bridge.models.conversion.model_bridge import MegatronModelBridge, WeightConversionTask
@@ -52,7 +53,9 @@ from megatron.bridge.models.conversion.param_mapping import (
 from megatron.bridge.models.conversion.transformers_compat import rope_theta_from_hf
 from megatron.bridge.models.hf_pretrained.causal_lm import PreTrainedCausalLM
 
-from .granite_provider import GraniteModelProvider
+from .granite_provider import GraniteMoeModelProvider, GraniteModelProvider
+
+logger = logging.getLogger(__name__)
 
 
 @MegatronModelBridge.register_bridge(
@@ -362,6 +365,337 @@ class GraniteBridge(MegatronModelBridge):
                     megatron_param="decoder.layers.*.mlp.linear_fc1.bias",
                     gate="model.layers.*.mlp.gate_proj.bias",
                     up="model.layers.*.mlp.up_proj.bias",
+                )
+            )
+
+        return MegatronMappingRegistry(*mapping_list)
+
+
+@MegatronModelBridge.register_bridge(
+    source=GraniteMoeForCausalLM,
+    target=GPTModel,
+    provider=GraniteMoeModelProvider,
+    model_type="granitemoe",
+)
+class GraniteMoeBridge(GraniteBridge):
+    """
+    Megatron Bridge for Granite MoE Causal LM.
+
+    Extends GraniteBridge with Mixture-of-Experts support. Inherits all Granite
+    scaling multiplier handling (embedding_multiplier, residual_multiplier,
+    logits_scaling, attention_multiplier).
+
+    The HF GraniteMoe architecture uses:
+      - block_sparse_moe.router.layer.weight: top-k gating linear
+      - block_sparse_moe.input_linear.weight: [num_experts, ffn*2, hidden] (fused gate+up)
+      - block_sparse_moe.output_linear.weight: [num_experts, hidden, ffn] (down proj)
+
+    Supported models:
+      - ibm/PowerMoE-3b
+      - Any GraniteMoeForCausalLM variant
+    """
+
+    def provider_bridge(self, hf_pretrained: PreTrainedCausalLM) -> GraniteMoeModelProvider:
+        """Convert HuggingFace GraniteMoe config to a GraniteMoeModelProvider."""
+        hf_config = hf_pretrained.config
+
+        provider = GraniteMoeModelProvider(
+            num_layers=hf_config.num_hidden_layers,
+            hidden_size=hf_config.hidden_size,
+            ffn_hidden_size=hf_config.intermediate_size,
+            num_attention_heads=hf_config.num_attention_heads,
+            num_query_groups=getattr(hf_config, "num_key_value_heads", hf_config.num_attention_heads),
+            seq_length=hf_config.max_position_embeddings,
+            vocab_size=hf_config.vocab_size,
+            layernorm_epsilon=hf_config.rms_norm_eps,
+            rotary_base=rope_theta_from_hf(hf_config),
+            init_method_std=hf_config.initializer_range,
+            make_vocab_size_divisible_by=self.make_vocab_size_divisible_by(hf_config.vocab_size),
+            share_embeddings_and_output_weights=False,
+            add_qkv_bias=getattr(hf_config, "attention_bias", False),
+            add_bias_linear=getattr(hf_config, "mlp_bias", False),
+            fp16=(self.dtype_from_hf(hf_config, default=torch.float32) == torch.float16),
+            bf16=(self.dtype_from_hf(hf_config, default=torch.float32) == torch.bfloat16),
+            params_dtype=self.dtype_from_hf(hf_config, default=torch.float32),
+            kv_channels=getattr(hf_config, "head_dim", None),
+            # MoE fields
+            num_moe_experts=hf_config.num_local_experts,
+            moe_router_topk=hf_config.num_experts_per_tok,
+            moe_ffn_hidden_size=hf_config.intermediate_size,
+            moe_aux_loss_coeff=getattr(hf_config, "router_aux_loss_coef", 0.001),
+        )
+
+        # attention_multiplier → softmax_scale (same as dense Granite)
+        provider.softmax_scale = float(getattr(hf_config, "attention_multiplier", 1.0))
+
+        return provider
+
+    # ------------------------------------------------------------------
+    # Multiplier handling (extends dense Granite for MoE output_linear)
+    # ------------------------------------------------------------------
+
+    def maybe_modify_loaded_hf_weight(
+        self, hf_param: str | dict, hf_state_dict: Mapping[str, torch.Tensor]
+    ) -> torch.Tensor | dict:
+        """
+        Bake Granite scaling multipliers during HF → Megatron loading.
+
+        Extends the dense Granite logic to handle the MoE output_linear weight,
+        which receives the residual_multiplier (same role as dense down_proj).
+        """
+        if isinstance(hf_param, str) and re.search(r"block_sparse_moe\.output_linear\.weight$", hf_param):
+            weight = super(GraniteBridge, self).maybe_modify_loaded_hf_weight(hf_param, hf_state_dict)
+            m_e, m_r, m_l, m_a = self._get_granite_multipliers()
+            if m_r != 1.0:
+                original_dtype = weight.dtype
+                w = weight.detach().float() * m_r
+                return w.to(original_dtype)
+            return weight
+
+        # All other weights handled by dense GraniteBridge
+        return super().maybe_modify_loaded_hf_weight(hf_param, hf_state_dict)
+
+    def maybe_modify_converted_hf_weight(
+        self,
+        task: WeightConversionTask,
+        converted_weights_dict: Dict[str, torch.Tensor],
+        hf_state_dict: Mapping[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Un-bake Granite multipliers during Megatron → HF export.
+
+        Extends the dense Granite logic to handle the MoE output_linear weight.
+        """
+        m_e, m_r, m_l, m_a = self._get_granite_multipliers()
+
+        # First let the dense bridge handle standard weights
+        result = super().maybe_modify_converted_hf_weight(task, converted_weights_dict, hf_state_dict)
+
+        # Then fix up MoE output_linear (residual_multiplier inverse)
+        if m_r != 1.0:
+            for hf_key, weight in list(result.items()):
+                if re.search(r"block_sparse_moe\.output_linear\.weight$", hf_key):
+                    target_dtype = hf_state_dict[hf_key].dtype if hf_key in hf_state_dict else weight.dtype
+                    w = weight.detach().float() / m_r
+                    result[hf_key] = w.to(target_dtype)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Expert weight loading (manual, outside the mapping system)
+    #
+    # HF GraniteMoe stores expert weights as stacked tensors:
+    #   input_linear.weight: [num_experts, ffn*2, hidden]
+    #   output_linear.weight: [num_experts, hidden, ffn]
+    #
+    # Megatron TEGroupedMLP stores per-expert parameters:
+    #   experts.linear_fc1.weight0, weight1, ..., weight{N-1}
+    #   experts.linear_fc2.weight0, weight1, ..., weight{N-1}
+    #
+    # The standard mapping system can't handle this stacked↔per-expert
+    # conversion, so we do it manually after the standard loading.
+    # ------------------------------------------------------------------
+
+    def load_weights_hf_to_megatron(
+        self,
+        hf_pretrained,
+        megatron_model,
+        allowed_mismatched_params: Optional[List[str]] = None,
+    ):
+        """Load HF weights into Megatron, with manual expert weight handling.
+
+        Expert weights are handled separately because HF GraniteMoe stores them
+        as stacked tensors [num_experts, ...] while Megatron TEGroupedMLP stores
+        them as per-expert parameters (weight0, weight1, ...).
+        """
+        import contextlib
+
+        if not isinstance(megatron_model, list):
+            megatron_model = [megatron_model]
+
+        # Phase 1: Standard mapping for non-expert weights
+        with contextlib.ExitStack() as stack:
+            if hasattr(megatron_model[0], "hide_teacher_model"):
+                stack.enter_context(megatron_model[0].hide_teacher_model())
+            if hasattr(megatron_model[0], "hide_loss_modules"):
+                stack.enter_context(megatron_model[0].hide_loss_modules())
+            hf_to_megatron_tasks = self.build_conversion_tasks(hf_pretrained, megatron_model)
+
+        hf_state_dict = hf_pretrained.state if hasattr(hf_pretrained, "state") else {}
+
+        description = f"Loading from {hf_pretrained.model_name_or_path}"
+        skipped_none = []
+        loaded_params = []
+        for task in self._with_progress_tracking(hf_to_megatron_tasks, description):
+            # Skip None tasks (unmatched expert params)
+            if task is None:
+                skipped_none.append("None task")
+                continue
+            if task.megatron_module is None:
+                skipped_none.append(f"no module: {task.mapping.megatron_param}")
+                continue
+            loaded_params.append(task.mapping.megatron_param)
+            hf_weights = self.maybe_modify_loaded_hf_weight(task.mapping.hf_param, hf_state_dict)
+            converted_weights = task.mapping.hf_to_megatron(hf_weights, task.megatron_module)
+            if converted_weights is not None:
+                assert task.param_weight is not None
+                if converted_weights.shape != task.param_weight.shape:
+                    raise ValueError(
+                        f"Shape mismatch: {task.mapping.megatron_param} "
+                        f"expected {task.param_weight.shape}, got {converted_weights.shape}"
+                    )
+                task.param_weight.data.copy_(converted_weights)
+
+        logger.info(f"GraniteMoE: standard mapping loaded {len(loaded_params)} params, skipped {len(skipped_none)}")
+        if skipped_none:
+            logger.info(f"GraniteMoE: skipped tasks: {skipped_none[:20]}")
+        logger.info(f"GraniteMoE: loaded params: {loaded_params[:20]}")
+
+        # Phase 2: Manual expert weight loading
+        # With EP, each rank holds a subset of experts. Local weight indices
+        # (weight0, weight1, ...) must be mapped to global expert indices:
+        #   global_idx = ep_rank * num_local_experts + local_idx
+        from megatron.core import parallel_state
+
+        m_e, m_r, m_l, m_a = self._get_granite_multipliers()
+        num_local_experts = self.hf_config.num_local_experts
+        try:
+            ep_rank = parallel_state.get_expert_model_parallel_rank()
+            ep_size = parallel_state.get_expert_model_parallel_world_size()
+            num_local_experts_per_rank = num_local_experts // ep_size
+        except Exception:
+            ep_rank = 0
+            num_local_experts_per_rank = num_local_experts
+
+        expert_loaded_count = 0
+        expert_names_seen = []
+        for model in megatron_model:
+            for name, param in model.named_parameters():
+                if "expert" in name and "weight" in name and "layers.0." in name:
+                    expert_names_seen.append(name)
+
+                # Match expert FC1 weights: decoder.layers.N.mlp.experts.linear_fc1.weightI
+                fc1_match = re.match(
+                    r".*?decoder\.layers\.(\d+)\.mlp\.experts\.linear_fc1\.weight(\d+)$", name
+                )
+                if fc1_match:
+                    layer_idx = int(fc1_match.group(1))
+                    local_expert_idx = int(fc1_match.group(2))
+                    global_expert_idx = ep_rank * num_local_experts_per_rank + local_expert_idx
+                    hf_key = f"model.layers.{layer_idx}.block_sparse_moe.input_linear.weight"
+                    if hf_key in hf_state_dict:
+                        expert_weight = hf_state_dict[hf_key][global_expert_idx]
+                        param.data.copy_(expert_weight)
+                        expert_loaded_count += 1
+                    continue
+
+                # Match expert FC2 weights: decoder.layers.N.mlp.experts.linear_fc2.weightI
+                fc2_match = re.match(
+                    r".*?decoder\.layers\.(\d+)\.mlp\.experts\.linear_fc2\.weight(\d+)$", name
+                )
+                if fc2_match:
+                    layer_idx = int(fc2_match.group(1))
+                    local_expert_idx = int(fc2_match.group(2))
+                    global_expert_idx = ep_rank * num_local_experts_per_rank + local_expert_idx
+                    hf_key = f"model.layers.{layer_idx}.block_sparse_moe.output_linear.weight"
+                    if hf_key in hf_state_dict:
+                        expert_weight = hf_state_dict[hf_key][global_expert_idx]
+                        # Apply residual_multiplier (same as dense down_proj)
+                        if m_r != 1.0:
+                            original_dtype = expert_weight.dtype
+                            expert_weight = (expert_weight.detach().float() * m_r).to(original_dtype)
+                        param.data.copy_(expert_weight)
+                        expert_loaded_count += 1
+                    continue
+
+        logger.info(f"GraniteMoE: expert param names (layer 0): {expert_names_seen[:10]}")
+        logger.info(f"GraniteMoE: total expert weights loaded in Phase 2: {expert_loaded_count}")
+        logger.info(
+            f"GraniteMoE: expert weights loaded (ep_rank={ep_rank}, "
+            f"{num_local_experts_per_rank} local experts, "
+            f"global offset={ep_rank * num_local_experts_per_rank})"
+        )
+        return megatron_model
+
+    # ------------------------------------------------------------------
+    # Weight mapping (non-expert params only)
+    # ------------------------------------------------------------------
+
+    def mapping_registry(self) -> MegatronMappingRegistry:
+        """Map Megatron parameter names → HF parameter names for GraniteMoe.
+
+        Expert weights (linear_fc1, linear_fc2) are handled separately in
+        load_weights_hf_to_megatron because HF stores them as stacked tensors
+        while Megatron stores them as per-expert parameters.
+        """
+        config = self.hf_config
+        attention_bias = getattr(config, "attention_bias", False)
+        tied = getattr(config, "tie_word_embeddings", False)
+
+        # ---- 1:1 parameter mappings (no expert weights) ----
+        param_mappings = {
+            "embedding.word_embeddings.weight": "model.embed_tokens.weight",
+            "decoder.final_layernorm.weight": "model.norm.weight",
+            # Pre-attention layernorm (fused with QKV in TE)
+            "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": (
+                "model.layers.*.input_layernorm.weight"
+            ),
+            # Pre-MLP layernorm (separate for MoE, not fused with FC1)
+            "decoder.layers.*.pre_mlp_layernorm.weight": (
+                "model.layers.*.post_attention_layernorm.weight"
+            ),
+            # Attention output projection
+            "decoder.layers.*.self_attention.linear_proj.weight": (
+                "model.layers.*.self_attn.o_proj.weight"
+            ),
+            # MoE router
+            "decoder.layers.*.mlp.router.weight": (
+                "model.layers.*.block_sparse_moe.router.layer.weight"
+            ),
+        }
+
+        # Tied embeddings handling (same as dense Granite)
+        if tied:
+            lm_head_mapping = AutoMapping(
+                megatron_param="output_layer.weight",
+                hf_param="lm_head.weight",
+            )
+            lm_head_mapping.allow_hf_name_mismatch = True
+        else:
+            lm_head_mapping = None
+            param_mappings["output_layer.weight"] = "lm_head.weight"
+
+        # Optional attention bias
+        if attention_bias:
+            param_mappings["decoder.layers.*.self_attention.linear_proj.bias"] = (
+                "model.layers.*.self_attn.o_proj.bias"
+            )
+
+        mapping_list = [
+            AutoMapping(megatron_param=meg, hf_param=hf)
+            for meg, hf in param_mappings.items()
+        ]
+
+        if lm_head_mapping is not None:
+            mapping_list.append(lm_head_mapping)
+
+        # ---- QKV concatenation ----
+        mapping_list.append(
+            QKVMapping(
+                megatron_param="decoder.layers.*.self_attention.linear_qkv.weight",
+                q="model.layers.*.self_attn.q_proj.weight",
+                k="model.layers.*.self_attn.k_proj.weight",
+                v="model.layers.*.self_attn.v_proj.weight",
+            )
+        )
+
+        if attention_bias:
+            mapping_list.append(
+                QKVMapping(
+                    megatron_param="decoder.layers.*.self_attention.linear_qkv.bias",
+                    q="model.layers.*.self_attn.q_proj.bias",
+                    k="model.layers.*.self_attn.k_proj.bias",
+                    v="model.layers.*.self_attn.v_proj.bias",
                 )
             )
 

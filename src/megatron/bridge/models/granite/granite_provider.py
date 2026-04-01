@@ -143,3 +143,33 @@ class GraniteModelProvider30B(GraniteModelProvider):
     init_method_std: float = 0.1
     layernorm_epsilon: float = 1e-5
     vocab_size: int = 100352
+
+
+@dataclass
+class GraniteMoeModelProvider(GraniteModelProvider):
+    """
+    Base configuration for Granite MoE models in Megatron.
+
+    Granite MoE uses the same architecture as dense Granite (RMSNorm, RoPE,
+    SwiGLU, GQA, scaling multipliers) but replaces the dense MLP with a
+    Sparse Mixture-of-Experts layer using top-k gating.
+
+    The HF checkpoint stores expert weights in grouped format:
+      - input_linear.weight: [num_experts, intermediate_size*2, hidden_size] (fused gate+up)
+      - output_linear.weight: [num_experts, hidden_size, intermediate_size] (down proj)
+    """
+
+    # MoE architecture
+    num_moe_experts: int = 40
+    moe_router_topk: int = 8
+    moe_ffn_hidden_size: int = 512
+
+    # MoE training
+    moe_aux_loss_coeff: float = 0.001
+    moe_token_dispatcher_type: str = "alltoall"
+    moe_router_load_balancing_type: str = "seq_aux_loss"
+    moe_router_pre_softmax: bool = True
+    moe_grouped_gemm: bool = True
+    moe_router_score_function: str = "softmax"
+    moe_permute_fusion: bool = True
+    moe_router_dtype: str = "fp32"

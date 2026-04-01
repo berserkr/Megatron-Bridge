@@ -14,8 +14,10 @@
 
 from megatron.bridge.recipes.granite.granite_8b import granite_8b_finetune_config
 from megatron.bridge.recipes.granite.granite_30b import granite_30b_finetune_config
+from megatron.bridge.recipes.granite.granite_moe_3b import granite_moe_3b_finetune_config
 
 __all__ = [
     "granite_8b_finetune_config",
     "granite_30b_finetune_config",
+    "granite_moe_3b_finetune_config",
 ]
