@@ -168,7 +168,7 @@ class GraniteMoeModelProvider(GraniteModelProvider):
     moe_aux_loss_coeff: float = 0.001
     moe_token_dispatcher_type: str = "alltoall"
     moe_router_load_balancing_type: str = "seq_aux_loss"
-    moe_router_pre_softmax: bool = True
+    moe_router_pre_softmax: bool = False
     moe_grouped_gemm: bool = True
     moe_router_score_function: str = "softmax"
     moe_permute_fusion: bool = True

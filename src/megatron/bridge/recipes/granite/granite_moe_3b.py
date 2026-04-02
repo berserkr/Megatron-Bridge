@@ -157,4 +157,5 @@ def granite_moe_3b_finetune_config(
     cfg.logger.log_interval = 1
     cfg.validation.eval_interval = 100
 
+    print(f"DEBUG softmax_scale on provider: {cfg.model.softmax_scale}")
     return cfg
