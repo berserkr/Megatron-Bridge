@@ -567,6 +567,14 @@ class GraniteMoeBridge(GraniteBridge):
             ep_rank = 0
             num_local_experts_per_rank = num_local_experts
 
+        # TP splitting: expert weights are sharded across TP ranks
+        try:
+            tp_rank = parallel_state.get_tensor_model_parallel_rank()
+            tp_size = parallel_state.get_tensor_model_parallel_world_size()
+        except Exception:
+            tp_rank = 0
+            tp_size = 1
+
         expert_loaded_count = 0
         expert_names_seen = []
         for model in megatron_model:
@@ -585,6 +593,10 @@ class GraniteMoeBridge(GraniteBridge):
                     hf_key = f"model.layers.{layer_idx}.block_sparse_moe.input_linear.weight"
                     if hf_key in hf_state_dict:
                         expert_weight = hf_state_dict[hf_key][global_expert_idx]
+                        # FC1 (input_linear): output dim (dim 0) split by TP
+                        if tp_size > 1:
+                            chunk_size = expert_weight.shape[0] // tp_size
+                            expert_weight = expert_weight[tp_rank * chunk_size : (tp_rank + 1) * chunk_size]
                         param.data.copy_(expert_weight)
                         expert_loaded_count += 1
                     continue
@@ -600,6 +612,10 @@ class GraniteMoeBridge(GraniteBridge):
                     hf_key = f"model.layers.{layer_idx}.block_sparse_moe.output_linear.weight"
                     if hf_key in hf_state_dict:
                         expert_weight = hf_state_dict[hf_key][global_expert_idx]
+                        # FC2 (output_linear): input dim (dim 1) split by TP
+                        if tp_size > 1:
+                            chunk_size = expert_weight.shape[1] // tp_size
+                            expert_weight = expert_weight[:, tp_rank * chunk_size : (tp_rank + 1) * chunk_size]
                         # Apply residual_multiplier (same as dense down_proj)
                         if m_r != 1.0:
                             original_dtype = expert_weight.dtype
