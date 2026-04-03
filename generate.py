@@ -1,7 +1,10 @@
 import argparse
 import json
+import os
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def load_jsonl(path):
@@ -19,103 +22,90 @@ def load_jsonl(path):
 
 
 def drop_last_assistant_turn(messages):
-    """
-    Remove the final assistant message if the last message has role='assistant'.
-    Otherwise return messages unchanged.
-    """
-    if not messages:
-        return messages
-
-    if messages[-1].get("role") == "assistant":
+    if messages and messages[-1].get("role") == "assistant":
         return messages[:-1]
-
     return messages
 
 
-def run_test(model_path, template_path, data_path):
-    print(f"Loading tokenizer and model from: {model_path}...")
+def build_prompt(tokenizer, record):
+    messages = record.get("messages")
+    if not isinstance(messages, list):
+        return None
 
+    input_messages = drop_last_assistant_turn(messages)
+    if not input_messages:
+        return None
+
+    return tokenizer.apply_chat_template(
+        input_messages,
+        add_generation_prompt=True,
+        tokenize=False,
+    )
+
+
+def main(model_path, template_path, data_path, batch_size=8, max_new_tokens=256):
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    with open(template_path, "r", encoding="utf-8") as f:
+        tokenizer.chat_template = f.read()
 
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
         trust_remote_code=True,
-    )
+        attn_implementation="flash_attention_2",  # or flash_attention_3 if supported
+    ).cuda()
 
-    # Load custom Jinja template
-    with open(template_path, "r", encoding="utf-8") as f:
-        custom_template = f.read()
-    tokenizer.chat_template = custom_template
+    model.eval()
+    model.generation_config.cache_implementation = "static"
+    #model.forward = torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)
 
     records = load_jsonl(data_path)
-    print(f"Loaded {len(records)} records from {data_path}")
+    prompts = []
 
-    print("\n" + "=" * 50)
-    print("EXECUTING GENERATION FROM JSONL")
-    print("=" * 50)
+    for r in records:
+        p = build_prompt(tokenizer, r)
+        if p is not None:
+            prompts.append(p)
 
-    for i, record in enumerate(records):
-        messages = record.get("messages")
-        if not isinstance(messages, list):
-            print(f"\n[RECORD {i+1}] Skipping: missing or invalid 'messages' field")
-            continue
+    for i in range(0, len(prompts), batch_size):
+        batch_prompts = prompts[i:i + batch_size]
 
-        input_messages = drop_last_assistant_turn(messages)
+        inputs = tokenizer(
+            batch_prompts,
+            return_tensors="pt",
+            max_length=131072,
+            padding=True,
+            truncation=True,
+            pad_to_multiple_of=8,
+        ).to("cuda")
 
-        if not input_messages:
-            print(f"\n[RECORD {i+1}] Skipping: no usable messages after trimming")
-            continue
-
-        # Get raw formatted prompt text
-        raw_prompt_text = tokenizer.apply_chat_template(
-            input_messages,
-            add_generation_prompt=True,
-            tokenize=False,
-        )
-
-        # Tokenize for generation
-        inputs = tokenizer(raw_prompt_text, return_tensors="pt").to(model.device)
-        input_ids = inputs["input_ids"]
-
-        print(f"\n[RECORD {i+1}]")
-        print("[INPUT MESSAGES]:")
-        for msg in input_messages:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            print(f"- {role}: {content}")
-
-        print("\n[RAW TEMPLATE]:")
-        print(raw_prompt_text)
-        print("-" * 15)
-
-        with torch.no_grad():
-            output_ids = model.generate(
+        with torch.inference_mode():
+            outputs = model.generate(
                 **inputs,
-                max_new_tokens=256,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id,
             )
 
-        new_tokens = output_ids[0][input_ids.shape[1]:]
-        response = tokenizer.decode(new_tokens, skip_special_tokens=True)
-
-        print(f"[RESPONSE]: {response.strip()}")
-        print("=" * 50)
+        input_lens = inputs["attention_mask"].sum(dim=1).tolist()
+        for j, seq in enumerate(outputs):
+            gen = seq[input_lens[j]:]
+            text = tokenizer.decode(gen, skip_special_tokens=True)
+            print(text.strip())
+            print("X" * 40)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, required=True)
-    parser.add_argument("--template", type=str, required=True)
-    parser.add_argument(
-        "--data",
-        type=str,
-        default="../Nemotron/test_data.jsonl",
-        help="Path to JSONL file containing a 'messages' field",
-    )
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--template", required=True)
+    parser.add_argument("--data", required=True)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--max-new-tokens", type=int, default=4096)
     args = parser.parse_args()
 
-    run_test(args.model, args.template, args.data)
+    main(args.model, args.template, args.data, args.batch_size, args.max_new_tokens)

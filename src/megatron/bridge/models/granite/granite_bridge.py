@@ -482,6 +482,138 @@ class GraniteMoeBridge(GraniteBridge):
         return result
 
     # ------------------------------------------------------------------
+    # Expert weight export (Megatron → HF)
+    # ------------------------------------------------------------------
+
+    def stream_weights_megatron_to_hf(
+        self,
+        megatron_model,
+        hf_pretrained,
+        cpu: bool = True,
+        show_progress: bool = True,
+        conversion_tasks=None,
+        merge_adapter_weights: bool = True,
+    ):
+        """Export Megatron weights to HF, with manual expert weight handling.
+
+        Overrides the base to skip None tasks (expert weights) and manually
+        export them as stacked tensors matching HF GraniteMoe format.
+        """
+        from megatron.core import parallel_state
+        from megatron.core.transformer.module import Float16Module
+
+        if not isinstance(megatron_model, list):
+            megatron_model = [megatron_model]
+
+        # Build tasks, filter out None entries (expert weights)
+        if conversion_tasks is None:
+            conversion_tasks = self.build_conversion_tasks(hf_pretrained, megatron_model)
+
+        filtered_tasks = [t for t in conversion_tasks if t is not None]
+
+        # Yield non-expert weights via standard path
+        yield from super().stream_weights_megatron_to_hf(
+            megatron_model,
+            hf_pretrained,
+            cpu=cpu,
+            show_progress=show_progress,
+            conversion_tasks=filtered_tasks,
+            merge_adapter_weights=merge_adapter_weights,
+        )
+
+        # Now manually export expert weights
+        m_e, m_r, m_l, m_a = self._get_granite_multipliers()
+        num_experts = self.hf_config.num_local_experts
+        num_layers = self.hf_config.num_hidden_layers
+
+        try:
+            tp_rank = parallel_state.get_tensor_model_parallel_rank()
+            tp_size = parallel_state.get_tensor_model_parallel_world_size()
+            tp_group = parallel_state.get_tensor_model_parallel_group()
+        except Exception:
+            tp_rank = 0
+            tp_size = 1
+            tp_group = None
+
+        try:
+            ep_rank = parallel_state.get_expert_model_parallel_rank()
+            ep_size = parallel_state.get_expert_model_parallel_world_size()
+            ep_group = parallel_state.get_expert_model_parallel_group()
+        except Exception:
+            ep_rank = 0
+            ep_size = 1
+            ep_group = None
+
+        num_local_experts = num_experts // ep_size
+
+        # Unwrap model to access parameters
+        model = megatron_model[0]
+        if hasattr(model, 'module'):
+            model = model.module
+        if isinstance(model, Float16Module):
+            model = model.module
+
+        for layer_idx in range(num_layers):
+            for fc_name, hf_name in [
+                ("linear_fc1", "input_linear"),
+                ("linear_fc2", "output_linear"),
+            ]:
+                # Collect local expert weights
+                local_expert_weights = []
+                for expert_idx in range(num_local_experts):
+                    param_name = f"decoder.layers.{layer_idx}.mlp.experts.{fc_name}.weight{expert_idx}"
+                    param = dict(model.named_parameters()).get(param_name)
+                    if param is None:
+                        # Try without decoder prefix
+                        for n, p in model.named_parameters():
+                            if n.endswith(f"layers.{layer_idx}.mlp.experts.{fc_name}.weight{expert_idx}"):
+                                param = p
+                                break
+                    if param is not None:
+                        w = param.data.clone()
+                        local_expert_weights.append(w)
+
+                if not local_expert_weights:
+                    continue
+
+                # Note: With moe_grouped_gemm=True, TE expert weights are NOT
+                # TP-split at the parameter level. TP splitting happens inside
+                # TE's kernel. So we skip TP gathering — each rank already has
+                # full expert weights. Only EP gathering is needed.
+
+                # Gather across EP ranks (collect all experts)
+                if ep_size > 1 and ep_group is not None:
+                    all_expert_weights = [torch.empty_like(local_expert_weights[0]) for _ in range(num_experts)]
+                    for i, w in enumerate(local_expert_weights):
+                        global_idx = ep_rank * num_local_experts + i
+                        all_expert_weights[global_idx] = w
+                    # Allgather each expert across EP ranks
+                    for global_idx in range(num_experts):
+                        source_ep_rank = global_idx // num_local_experts
+                        torch.distributed.broadcast(
+                            all_expert_weights[global_idx],
+                            src=parallel_state.get_expert_model_parallel_src_rank() + source_ep_rank,
+                            group=ep_group,
+                        )
+                else:
+                    all_expert_weights = local_expert_weights
+
+                # Stack into [num_experts, ...] tensor
+                stacked = torch.stack(all_expert_weights, dim=0)
+
+                # Un-bake residual_multiplier for output_linear (FC2)
+                if fc_name == "linear_fc2" and m_r != 1.0:
+                    stacked = (stacked.float() / m_r).to(stacked.dtype)
+
+                hf_key = f"model.layers.{layer_idx}.block_sparse_moe.{hf_name}.weight"
+                if cpu:
+                    stacked = stacked.cpu()
+
+                yield hf_key, stacked
+
+        logger.info("GraniteMoE: expert weights exported successfully")
+
+    # ------------------------------------------------------------------
     # Expert weight loading (manual, outside the mapping system)
     #
     # HF GraniteMoe stores expert weights as stacked tensors:
