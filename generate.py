@@ -59,7 +59,7 @@ def main(model_path, template_path, data_path, batch_size=8, max_new_tokens=256)
     ).cuda()
 
     model.eval()
-    model.generation_config.cache_implementation = "static"
+    #model.generation_config.cache_implementation = "static"
     #model.forward = torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)
 
     records = load_jsonl(data_path)
@@ -76,7 +76,7 @@ def main(model_path, template_path, data_path, batch_size=8, max_new_tokens=256)
         inputs = tokenizer(
             batch_prompts,
             return_tensors="pt",
-            max_length=131072,
+            max_length=8192,
             padding=True,
             truncation=True,
             pad_to_multiple_of=8,
@@ -93,9 +93,13 @@ def main(model_path, template_path, data_path, batch_size=8, max_new_tokens=256)
 
         input_lens = inputs["attention_mask"].sum(dim=1).tolist()
         for j, seq in enumerate(outputs):
-            gen = seq[input_lens[j]:]
-            text = tokenizer.decode(gen, skip_special_tokens=True)
-            print(text.strip())
+            prompt_text = tokenizer.decode(seq[:input_lens[j]], skip_special_tokens=False)
+            gen_text = tokenizer.decode(seq[input_lens[j]:], skip_special_tokens=False)
+            print(f"=== SAMPLE {i+j+1} ===")
+            print("--- PROMPT ---")
+            print(prompt_text.strip())
+            print("--- RESPONSE ---")
+            print(gen_text.strip())
             print("X" * 40)
 
 

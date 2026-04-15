@@ -645,6 +645,25 @@ class GraniteMoeBridge(GraniteBridge):
         if not isinstance(megatron_model, list):
             megatron_model = [megatron_model]
 
+        # Replace the debug print with this:
+        for n, p in megatron_model[0].named_parameters():
+            if 'word_embeddings' in n:
+                print(f"DEBUG embed param: {n}, shape={p.shape}", flush=True)
+                break
+        for n, p in megatron_model[0].named_parameters():
+            if 'output_layer' in n:
+                print(f"DEBUG output param: {n}, shape={p.shape}", flush=True)
+                break
+
+        # Also check the model's embedding module directly
+        model = megatron_model[0]
+        if hasattr(model, 'module'):
+            model = model.module
+        if hasattr(model, 'embedding'):
+            emb = model.embedding.word_embeddings
+            print(f"DEBUG VocabParallelEmbedding: num_embeddings={emb.num_embeddings}, "
+                    f"start={emb.vocab_start_index}, end={emb.vocab_end_index}", flush=True)
+
         # Phase 1: Standard mapping for non-expert weights
         with contextlib.ExitStack() as stack:
             if hasattr(megatron_model[0], "hide_teacher_model"):
@@ -763,6 +782,21 @@ class GraniteMoeBridge(GraniteBridge):
             f"{num_local_experts_per_rank} local experts, "
             f"global offset={ep_rank * num_local_experts_per_rank})"
         )
+
+        from megatron.core import parallel_state
+        tp_rank = parallel_state.get_tensor_model_parallel_rank()
+        for model in megatron_model:
+            for n, p in model.named_parameters():
+                if 'word_embeddings.weight' in n:
+                    print(f"DEBUG tp_rank={tp_rank} embed[0,:5] = {p.data[0,:5]}", flush=True)
+                    print(f"DEBUG tp_rank={tp_rank} embed shape = {p.data.shape}", flush=True)
+                    break
+            for n, p in model.named_parameters():
+                if 'output_layer.weight' in n:
+                    print(f"DEBUG tp_rank={tp_rank} lm_head[0,:5] = {p.data[0,:5]}", flush=True)
+                    print(f"DEBUG tp_rank={tp_rank} lm_head shape = {p.data.shape}", flush=True)
+                    break
+
         return megatron_model
 
     # ------------------------------------------------------------------

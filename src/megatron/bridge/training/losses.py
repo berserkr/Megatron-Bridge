@@ -65,6 +65,13 @@ def masked_next_token_loss(
     nan_in_mask = torch.isnan(loss_mask.float()).any().item()
     mask_sum = loss_mask.sum().item()
     print(f"DEBUG loss entry: CP={cp_rank} output_nan={nan_in_output} mask_nan={nan_in_mask} mask_sum={mask_sum} output_shape={output_tensor.shape} mask_shape={loss_mask.shape}", flush=True)
+    
+    # In masked_next_token_loss, right after the existing debug print:
+    if isinstance(output_tensor, tuple):
+        vals = output_tensor[0].view(-1).float()
+    else:
+        vals = output_tensor.view(-1).float()
+    print(f"DEBUG CP={cp_rank} losses[:10]={vals[:10]} mean={vals.mean():.4f} max={vals.max():.4f}", flush=True)
 
     if isinstance(output_tensor, tuple):
         losses = output_tensor[0].view(-1).float()

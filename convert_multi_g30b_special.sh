@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --partition=hpc-mid
-#SBATCH --nodes=1
-#SBATCH --job-name=granite-moe3b-export
+#SBATCH --nodes=8
+#SBATCH --job-name=granite-export
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=144
@@ -28,9 +28,9 @@ export MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST-}" | head -n
 export MASTER_PORT=28444
 export NNODES=$SLURM_NNODES
 
-LOCAL_HF_CKPT=/mnt/vast/proj/checkpoints/bathen/models/base/granite-3.3-8b-instruct
-SAVED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite8b_sft_8k_inst/iter_0001000
-EXPORTED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/exports/granite8b_sft_8k_inst-math_8k
+LOCAL_HF_CKPT=/mnt/vast/proj/checkpoints/bathen/models/base/30b-soft-lc-512k-lr1e-4-merged-3-7-special
+SAVED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite30b_sft_128k_special/iter_0002000
+EXPORTED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/exports/granite30b_sft_128k_special
 
 container_mounts="/mnt:/mnt"
 container_image="/mnt/vast/squash/nemo_sft_python312_v4.sqsh"
@@ -53,8 +53,7 @@ CMD="CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun ${DISTRIBUTED_ARGS} \
     --hf-model ${LOCAL_HF_CKPT} \
     --megatron-path ${SAVED_CKPT} \
     --hf-path ${EXPORTED_CKPT} \
-    --tp 1 --pp 1 --ep 1 \
-    --not-strict"
+    --tp 4 --pp 8 --not-strict"
 
 echo "$(date) Starting export: ${SAVED_CKPT} -> ${EXPORTED_CKPT}"
 srun ${SRUN_ARGS} bash -c "${CMD}"

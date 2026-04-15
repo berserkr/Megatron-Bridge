@@ -1623,9 +1623,10 @@ class ConfigContainer(Container):
                 # check average_in_collective to be False
                 # for context parallel to solve the issue of nan loss on ranks with all tokens masked
                 # (only happens in SFT)
-                assert self.model.calculate_per_token_loss, (
-                    "When finetuning with CP>1, calculate_per_token_loss must be True"
-                )
+                #TODO: *note* Luis... this assert assumes the torch.where fix at losses.py is applied
+                #assert self.model.calculate_per_token_loss, (
+                #    "When finetuning with CP>1, calculate_per_token_loss must be True"
+                #)
                 assert not self.ddp.average_in_collective, (
                     "When finetuning with CP>1, average_in_collective must be False"
                 )
