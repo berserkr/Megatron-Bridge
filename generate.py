@@ -82,25 +82,53 @@ def main(model_path, template_path, data_path, batch_size=8, max_new_tokens=256)
             pad_to_multiple_of=8,
         ).to("cuda")
 
-        with torch.inference_mode():
+        with torch.inference_mode():                                                                                                                                                                                                                                                        
             outputs = model.generate(
-                **inputs,
+                **inputs,                                                                                                                                                                                                                                                                   
                 max_new_tokens=max_new_tokens,
-                do_sample=False,
+                do_sample=True,
+                temperature=0.6,
+                top_p=0.95,
+                top_k=40,
+                repetition_penalty=1.15,
                 use_cache=True,
                 pad_token_id=tokenizer.pad_token_id,
             )
 
         input_lens = inputs["attention_mask"].sum(dim=1).tolist()
-        for j, seq in enumerate(outputs):
-            prompt_text = tokenizer.decode(seq[:input_lens[j]], skip_special_tokens=False)
-            gen_text = tokenizer.decode(seq[input_lens[j]:], skip_special_tokens=False)
-            print(f"=== SAMPLE {i+j+1} ===")
-            print("--- PROMPT ---")
-            print(prompt_text.strip())
+        for i, prompt in enumerate(prompts):                                                                                                                                                                                                                                                    
+            inputs = tokenizer(                                                                                                                                                                                                                                                                 
+                prompt,                                                                                                                                                                                                                                                                         
+                return_tensors="pt",                                                                                                                                                                                                                                                            
+                truncation=True,                                                                                                                                                                                                                                                                
+                max_length=8192,
+            ).to("cuda")                                                                                                                                                                                                                                                                        
+    
+            with torch.inference_mode():                                                                                                                                                                                                                                                        
+                output = model.generate(
+                    **inputs,                                                                                                                                                                                                                                                                   
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,                                                                                                                                                                                                                                                             
+                    temperature=0.6,
+                    top_p=0.95,                                                                                                                                                                                                                                                                 
+                    top_k=40,
+                    repetition_penalty=1.15,
+                    use_cache=True,
+                    pad_token_id=tokenizer.pad_token_id,                                                                                                                                                                                                                                        
+                )
+                                                                                                                                                                                                                                                                                                
+            input_len = inputs["input_ids"].shape[1]                                                                                                                                                                                                                                            
+            gen_text = tokenizer.decode(output[0][input_len:], skip_special_tokens=False)
+            eos_pos = gen_text.find("<|im_end|>")                                                                                                                                                                                                                                               
+            if eos_pos != -1:                                                                                                                                                                                                                                                                   
+                gen_text = gen_text[:eos_pos]                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                                
+            print(f"\n=== SAMPLE {i+1} ===")
+            print("--- PROMPT ---")                                                                                                                                                                                                                                                             
+            print(prompt.strip())                                                                                                                                                                                                                                                               
             print("--- RESPONSE ---")
-            print(gen_text.strip())
-            print("X" * 40)
+            print(gen_text.strip())                                                                                                                                                                                                                                                             
+            print("=" * 40)  
 
 
 if __name__ == "__main__":

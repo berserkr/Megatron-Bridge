@@ -28,9 +28,9 @@ export MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST-}" | head -n
 export MASTER_PORT=28444
 export NNODES=$SLURM_NNODES
 
-LOCAL_HF_CKPT=/mnt/vast/proj/checkpoints/bathen/models/base/granite-3.3-8b-base-special
-SAVED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite8b_sft_128k_special/iter_0001000
-EXPORTED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/exports/granite8b_sft_128k_special
+LOCAL_HF_CKPT=/mnt/vast/proj/checkpoints/bathen/models/base/granite-4.1-8b-base-special
+SAVED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite_42_8b_sft_128k_15m/iter_0000639
+EXPORTED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/exports/granite_42_8b_sft_128k_iter_15m
 
 container_mounts="/mnt:/mnt"
 container_image="/mnt/vast/squash/nemo_sft_0331.sqsh"
