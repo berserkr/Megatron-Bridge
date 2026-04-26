@@ -38,7 +38,7 @@ DP         = TOTAL_GPUS // (TENSOR_PARALLEL_SIZE * CONTEXT_PARALLEL_SIZE)
 SEQ_LENGTH = 131072
 
 
-def qwen3_8b_cp_validation_config() -> ConfigContainer:
+def qwen3_8b_cp_validation_config(hf_model_path: str = "/mnt/vast/proj/checkpoints/bathen/models/base/Qwen3-8B-Base") -> ConfigContainer:
     """Short CP>1 validation run for Qwen3-8B at 128k.
 
     Intentionally minimal training steps -- just enough to confirm:
@@ -51,10 +51,10 @@ def qwen3_8b_cp_validation_config() -> ConfigContainer:
     cfg = _sft_common()
 
     # -- Model ----------------------------------------------------------------
-    cfg.model = AutoBridge.from_hf_pretrained("/mnt/vast/proj/checkpoints/bathen/models/base/Qwen3-8B-Base").to_megatron_provider(load_weights=True)
+    cfg.model = AutoBridge.from_hf_pretrained(hf_model_path).to_megatron_provider(load_weights=True)
 
     # -- Tokenizer ------------------------------------------------------------
-    cfg.tokenizer.tokenizer_model = "/mnt/vast/proj/checkpoints/bathen/models/base/Qwen3-8B-Base"
+    cfg.tokenizer.tokenizer_model = hf_model_path
 
     # -- Parallelism ----------------------------------------------------------
     cfg.model.tensor_model_parallel_size           = TENSOR_PARALLEL_SIZE

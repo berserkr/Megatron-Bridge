@@ -91,6 +91,13 @@ def _partition_packed_batch_for_cp(batch: dict[str, torch.Tensor], cp_size: int)
         "token_count",
     }
 
+    #if cp_rank == 0:
+    #    first_val = next(v for k, v in batch.items() if v is not None and k not in skip_keys)
+    #    print(f"DEBUG CP: cu_seqlens={cu_seqlens.tolist()}, "
+    #            f"seq_len={first_val.size(1)}, cp_size={cp_size}, "
+    #            f"cu_seqlens[-1]={cu_seqlens[-1].item()}, "
+    #            f"match={cu_seqlens[-1].item() == first_val.size(1)}", flush=True)
+
     index = None
     for key, val in batch.items():
         if val is None or key in skip_keys:

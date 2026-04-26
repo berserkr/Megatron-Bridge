@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --partition=hpc-mid
 #SBATCH --nodes=4
-#SBATCH --job-name=granite8b-export
+#SBATCH --job-name=qwen3-8b-export
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=144
@@ -28,9 +28,9 @@ export MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST-}" | head -n
 export MASTER_PORT=28444
 export NNODES=$SLURM_NNODES
 
-LOCAL_HF_CKPT=/mnt/vast/proj/checkpoints/bathen/models/base/granite-4.1-8b-base-special
-SAVED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite8b-tulu3-32k-cp2-stage1/iter_0000300
-EXPORTED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/exports/granite8b-tulu3-32k-cp2-stage1
+LOCAL_HF_CKPT=/mnt/vast/proj/checkpoints/bathen/models/base/Qwen3-8B-Base
+SAVED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/nemo_run/low-effort-qwen8b-128k/iter_0000504
+EXPORTED_CKPT=/mnt/vast/proj/checkpoints/bathen/models/exports/low-effort-qwen8b-128k
 
 container_mounts="/mnt:/mnt"
 container_image="/mnt/vast/squash/nemo_sft_0331.sqsh"
@@ -48,15 +48,12 @@ export DISTRIBUTED_ARGS=" \
     --master_addr ${MASTER_ADDR} \
     --master_port ${MASTER_PORT}"
 
-# TP=4, PP=1 matches training config
-# --not-strict required for Granite (tied embeddings)
 CMD="CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun ${DISTRIBUTED_ARGS} \
     examples/conversion/convert_checkpoints_multi_gpu.py export \
     --hf-model ${LOCAL_HF_CKPT} \
     --megatron-path ${SAVED_CKPT} \
     --hf-path ${EXPORTED_CKPT} \
-    --tp 4 --pp 1 \
-    --not-strict"
+    --tp 4 --pp 1"
 
 echo "$(date) Starting export: ${SAVED_CKPT} -> ${EXPORTED_CKPT}"
 srun ${SRUN_ARGS} bash -c "${CMD}"

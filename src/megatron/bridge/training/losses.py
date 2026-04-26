@@ -83,7 +83,8 @@ def masked_next_token_loss(
     # Use torch.where to avoid NaN * 0 = NaN (IEEE 754) at padding positions.
     # With CP>1, pad_seq_to_mult introduces padding tokens (loss_mask=0). If the model
     # produces NaN/Inf at those positions, naive `losses * loss_mask` propagates NaN.
-    loss = torch.sum(torch.where(loss_mask.bool(), losses, torch.zeros_like(losses)) * loss_mask)
+    #loss = torch.sum(torch.where(loss_mask.bool(), losses, torch.zeros_like(losses)) * loss_mask)
+    loss = torch.sum(losses * loss_mask)
     num_tokens_local = loss_mask.sum()
 
     # Check individual rank losses are not NaN prior to DP all-reduce.

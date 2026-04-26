@@ -100,7 +100,7 @@ def granite_8b_finetune_config(
     # -- Optimizer ------------------------------------------------------------
     opt_cfg, scheduler_cfg = distributed_fused_adam_with_cosine_annealing(
         max_lr=finetune_lr,
-        min_lr=0.0,
+        min_lr=finetune_lr,
         lr_warmup_iters=lr_warmup_iters,
         adam_beta2=0.98,
     )

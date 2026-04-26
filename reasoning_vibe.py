@@ -58,7 +58,7 @@ def build_prompt(tokenizer, messages, enable_thinking):
     )
 
 
-def extract_response(text):
+def extract_response(text, enable_thinking=True):
     eos = text.find("<|im_end|>")
     if eos != -1:
         text = text[:eos]
@@ -75,7 +75,14 @@ def extract_response(text):
     elif think_start != -1 and think_end == -1:
         thinking = text[think_start + len("<think>"):].strip()
         answer = "[thinking truncated — increase --max-new-tokens]"
-    elif think_start == -1:
+    elif think_start == -1 and think_end != -1 and enable_thinking:
+        # Prompt already included <think>\n, output starts inside think block
+        thinking = text[:think_end].strip()
+        answer = text[think_end + len("</think>"):].strip()
+    elif think_start == -1 and think_end == -1 and enable_thinking:
+        thinking = text.strip()
+        answer = "[thinking truncated — increase --max-new-tokens]"
+    else:
         answer = text.strip()
 
     return thinking, answer
@@ -160,7 +167,7 @@ def main():
         print(f"{'-'*70}")
 
         raw_on = generate(model, tokenizer, prompt_on, args)
-        thinking_on, answer_on = extract_response(raw_on)
+        thinking_on, answer_on = extract_response(raw_on, enable_thinking=True)
 
         if thinking_on:
             limit = args.thinking_limit
@@ -183,7 +190,7 @@ def main():
         print(f"{'-'*70}")
 
         raw_off = generate(model, tokenizer, prompt_off, args)
-        thinking_off, answer_off = extract_response(raw_off)
+        thinking_off, answer_off = extract_response(raw_off, enable_thinking=False)
 
         if thinking_off:
             print(f"\n  [unexpected thinking block: {len(thinking_off)} chars]")

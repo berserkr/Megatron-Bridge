@@ -856,6 +856,8 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             self.samples_mapping = None
 
     def _build_loss_mask(self, processed_example):
+        #print(f"DEBUG answer_only_loss={self.answer_only_loss}", flush=True)  # ADD THIS
+
         seq_boundaries = processed_example["seq_boundaries"]
         if self.answer_only_loss:
             return np.concatenate(
