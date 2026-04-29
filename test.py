@@ -5,7 +5,7 @@ model_path = "/mnt/vast/proj/checkpoints/bathen/models/exports/qwen3_8b_sft_128k
 model_path = "/mnt/vast/proj/checkpoints/bathen/models/exports/granite_42_8b_sft_32k_cp2_diag"
 model_path = "/mnt/vast/proj/checkpoints/bathen/models/exports/granite_42_8b_sft_32k_cp1_v2"
 model_path = "/mnt/vast/proj/checkpoints/bathen/models/exports/granite_42_8b_sft_32k_cp1_v2_stage2"
-model_path = "/mnt/vast/proj/checkpoints/bathen/models/exports/granite_cp2_final"
+model_path = "/mnt/vast/proj/checkpoints/bathen/models/sft/granite_v1_sampled_7m_balanced_ash_128k_8b_cp2"
 
 template_path = "../Nemotron/chat_template.jinja"
 #template_path = "/mnt/vast/proj/checkpoints/bathen/models/exports/granite30b_sft_128k_special/chat_template.jinja"

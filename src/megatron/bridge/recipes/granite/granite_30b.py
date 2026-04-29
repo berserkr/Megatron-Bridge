@@ -84,7 +84,7 @@ def granite_30b_finetune_config(
     # -- Optimizer: cosine annealing with warmup ------------------------------
     opt_cfg, scheduler_cfg = distributed_fused_adam_with_cosine_annealing(
         max_lr=finetune_lr,
-        min_lr=0.0,
+        min_lr=finetune_lr, # keep it constant
         lr_warmup_iters=lr_warmup_iters,
         adam_beta2=0.98,
     )
