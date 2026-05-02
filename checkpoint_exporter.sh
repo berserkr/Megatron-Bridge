@@ -5,14 +5,7 @@ HF_CONFIG=/mnt/vast/proj/checkpoints/bathen/models/base/granite-4.1-8b-base-spec
 OUTPUT_BASE=/mnt/vast/proj/checkpoints/bathen/models/sft
 
 CHECKPOINTS=(
-    /mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite_v1_sampled_10m_swe_ash_128k_8b_cp2_fullcot/iter_0000323
-    /mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite_v1_sampled_10m_balanced_ash_128k_8b_cp2_fullcot/iter_0000303
-    /mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite_v1_sampled_10m_swe_ash_128k_8b_cp2/iter_0000279
-    /mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite_v1_sampled_10m_balanced_ash_128k_8b_cp2/iter_0000265
-    /mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite_v1_sampled_7m_swe_ash_128k_8b_cp2_fullcot/iter_0000219
-    /mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite_v1_sampled_7m_balanced_ash_128k_8b_cp2_fullcot/iter_0000236
-    /mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite_v1_sampled_7m_swe_ash_128k_8b_cp2/iter_0000300
-    /mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite_v1_sampled_7m_balanced_ash_128k_8b_cp2/iter_0000300
+/mnt/vast/proj/checkpoints/bathen/models/nemo_run/granite_v1_sampled_7m_balanced_ash_128k_8b_cp2/iter_0000553
 )
 
 SCRIPT_DIR=/mnt/home/bathen/src/github.com/Megatron-Bridge
